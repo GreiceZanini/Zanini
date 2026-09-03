@@ -1,0 +1,4 @@
+{
+  "name": "Zanini NFS-e automation",
+  "install": "bash .cursor/install.sh"
+}
