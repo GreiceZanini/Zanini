@@ -1,0 +1,9 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Playwright / runtime output
+downloads/
+downloads_emitidas/
+*.log
