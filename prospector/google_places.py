@@ -33,8 +33,11 @@ class ErroPlaces(RuntimeError):
     pass
 
 
-def buscar(texto: str, api_key: str, idioma: str = "pt-BR", regiao: str = "BR"):
-    """Busca por texto e percorre as páginas (a API limita a 60 resultados por consulta)."""
+def buscar_paginas(texto: str, api_key: str, idioma: str = "pt-BR", regiao: str = "BR"):
+    """Busca por texto e devolve uma lista de lugares por página (cada página = 1 chamada cobrada).
+
+    A API limita a 60 resultados (3 páginas) por consulta.
+    """
     token = None
     while True:
         corpo = {"textQuery": texto, "languageCode": idioma, "regionCode": regiao, "pageSize": 20}
@@ -56,7 +59,7 @@ def buscar(texto: str, api_key: str, idioma: str = "pt-BR", regiao: str = "BR"):
         except urllib.error.HTTPError as e:
             raise ErroPlaces(f"HTTP {e.code}: {e.read().decode(errors='replace')}") from e
 
-        yield from dados.get("places", [])
+        yield dados.get("places", [])
         token = dados.get("nextPageToken")
         if not token:
             return
