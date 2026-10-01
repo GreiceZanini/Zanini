@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import busca_web, cnpj_indice, osm
 from .classificacao import classificar_site, extrair_instagram
-from .google_places import ErroPlaces, buscar_area, retangulo
+from .google_places import ErroPlaces, buscar_area, buscar_paginas, retangulo
 
 RAIZ = Path(__file__).resolve().parent
 PAGINA = RAIZ / "web" / "index.html"
@@ -134,11 +134,35 @@ def buscar(dados: dict) -> dict:
             "avisos": avisos, "empresas": list(empresas.values())}
 
 
+def ficha_google(nome: str, cidade: str, uf: str, chave: str, lat=None, lon=None):
+    """Uma chamada ao Google: busca a empresa pelo nome e devolve a ficha se o nome bater
+    e, quando a posição é conhecida, se estiver a até 1 km dela (evita filiais de outras cidades)."""
+    extra = None
+    if lat is not None and lon is not None:
+        extra = {"locationBias": {"circle": {"center": {"latitude": lat, "longitude": lon}, "radius": 1000.0}}}
+    try:
+        pagina = next(buscar_paginas(f"{nome} {cidade} {uf}".strip(), chave, extra=extra), [])
+    except (ErroPlaces, StopIteration):
+        return None
+    for p in pagina[:5]:
+        e = _empresa_google(p)
+        if not busca_web._nome_bate(nome, e["nome"]):
+            continue
+        if lat is not None and e["lat"] is not None and _distancia(lat, lon, e["lat"], e["lon"]) > 1000:
+            continue
+        return e
+    return None
+
+
 def enriquecer(dados: dict) -> dict:
     nome, cidade = dados.get("nome", ""), dados.get("cidade", "")
     uf = dados.get("uf", "")
     cfg = ler_config()
-    res = {"links_manuais": busca_web.links_manuais(nome, f"{cidade} {uf}".strip()), "web": None, "cnpj": None}
+    res = {"links_manuais": busca_web.links_manuais(nome, f"{cidade} {uf}".strip()),
+           "google": None, "web": None, "cnpj": None}
+    # Empresa veio do OpenStreetMap: procura a ficha dela no Google Maps (site, telefone)
+    if cfg["google_key"] and dados.get("fonte") != "Google Maps":
+        res["google"] = ficha_google(nome, cidade, uf, cfg["google_key"], dados.get("lat"), dados.get("lon"))
     if cfg["brave_key"]:
         res["web"] = busca_web.pesquisar(nome, f"{cidade} {uf}".strip(), cfg["brave_key"])
     if cnpj_indice.disponivel():

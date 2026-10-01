@@ -98,3 +98,22 @@ class TestIndiceCNPJ(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFichaGoogle(unittest.TestCase):
+    def test_nome_bate_palavra_inteira(self):
+        self.assertTrue(busca_web._nome_bate("OLÉ Futebol Society", "Olé Futebol Society - Passo Fundo-RS"))
+        self.assertFalse(busca_web._nome_bate("OLÉ Futebol Society", "Toledo Futebol Clube"))
+
+    def test_descarta_longe(self):
+        perto = {"id": "1", "displayName": {"text": "Padaria X"}, "location": {"latitude": 0.001, "longitude": 0},
+                 "websiteUri": "https://padariax.com.br"}
+        longe = dict(perto, id="2", location={"latitude": 1, "longitude": 1})
+
+        def falso(pagina):
+            return lambda *a, **k: iter([pagina])
+
+        with mock.patch.object(servidor, "buscar_paginas", side_effect=falso([longe])):
+            self.assertIsNone(servidor.ficha_google("Padaria X", "Toledo", "PR", "k", 0, 0))
+        with mock.patch.object(servidor, "buscar_paginas", side_effect=falso([longe, perto])):
+            self.assertEqual(servidor.ficha_google("Padaria X", "Toledo", "PR", "k", 0, 0)["site"], "https://padariax.com.br")

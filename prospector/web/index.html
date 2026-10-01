@@ -291,8 +291,12 @@ $("btn-enriquecer").onclick = async () => {
   for (let i = 0; i < fila.length; i++) {
     const e = fila[i]; e.enr = "..."; renderTabela(); barra(i / fila.length);
     try {
-      const r = await api("/api/enriquecer", { nome: e.nome, cidade: estado.centro.cidade, uf: estado.centro.uf, endereco: e.endereco });
+      const r = await api("/api/enriquecer", { nome: e.nome, cidade: estado.centro.cidade, uf: estado.centro.uf, endereco: e.endereco, fonte: e.fonte, lat: e.lat, lon: e.lon });
       e.links_manuais = r.links_manuais;
+      if (r.google) {
+        for (const k of ["site","instagram","telefone"]) if (!e[k] && r.google[k]) e[k] = r.google[k];
+        e.links.push(...r.google.links.filter(l => l.url));
+      }
       if (r.web) {
         for (const k of ["site","instagram","facebook","linkedin"]) if (!e[k] && r.web[k]) e[k] = r.web[k];
         e.links.push(...r.web.links.filter(l => l.url).map(l => ({ titulo: l.titulo, url: l.url, origem: "Busca web" })));

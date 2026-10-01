@@ -5,6 +5,8 @@ automaticamente. Sem chave, o sistema devolve links de busca prontos para abrir 
 """
 
 import json
+import math
+import re
 import urllib.parse
 import urllib.request
 
@@ -55,12 +57,13 @@ def _eh_agregador(url: str) -> bool:
 
 
 def _nome_bate(nome: str, texto: str) -> bool:
-    """Pelo menos metade das palavras relevantes do nome aparecem no título/trecho."""
-    palavras = [p for p in nome.lower().split() if len(p) > 2]
+    """Pelo menos 60% das palavras relevantes do nome (sem acento) aparecem no texto."""
+    from .cnpj import normalizar
+    palavras = [p for p in re.findall(r"[A-Z0-9]+", normalizar(nome)) if len(p) > 2]
     if not palavras:
         return False
-    texto = texto.lower()
-    return sum(p in texto for p in palavras) >= max(1, len(palavras) // 2)
+    texto = set(re.findall(r"[A-Z0-9]+", normalizar(texto)))  # palavras inteiras ("OLE" não casa com "TOLEDO")
+    return sum(p in texto for p in palavras) >= max(1, math.ceil(len(palavras) * 0.6))
 
 
 def pesquisar(nome: str, cidade: str, chave: str) -> dict:
