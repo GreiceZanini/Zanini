@@ -14,6 +14,8 @@ from .classificacao import classificar_site, extrair_instagram
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 OVERPASS = "https://overpass-api.de/api/interpreter"
+# Instâncias públicas listadas em https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances
+OVERPASS_ESPELHOS = [OVERPASS, "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
 USER_AGENT = "zanini-prospector/0.2 (uso interno)"
 
 # amenity que não são negócios (escolas públicas, bancos de praça, etc.)
@@ -139,3 +141,36 @@ def buscar(local: str, categorias: list[str] | None = None):
         if not categorias and not eh_negocio(tags):
             continue
         yield para_linha(el)
+
+
+def _overpass(query: str) -> dict:
+    """Tenta a instância principal e, se falhar, os espelhos públicos."""
+    erros = []
+    for url in OVERPASS_ESPELHOS:
+        try:
+            return _get_json(url, urllib.parse.urlencode({"data": query}).encode())
+        except ErroOSM as e:
+            erros.append(str(e))
+    raise ErroOSM("; ".join(erros))
+
+
+def geocodificar(endereco: str) -> dict:
+    """Endereço, bairro ou cidade -> {lat, lon, nome}. Usa Nominatim (gratuito)."""
+    q = urllib.parse.urlencode({"q": endereco, "format": "jsonv2", "limit": 1, "countrycodes": "br", "addressdetails": 1})
+    r = _get_json(f"{NOMINATIM}?{q}", timeout=30)
+    if not r:
+        raise ErroOSM(f"Endereço não encontrado: {endereco}")
+    a = r[0].get("address", {})
+    cidade = a.get("city") or a.get("town") or a.get("village") or a.get("municipality") or ""
+    uf = (a.get("ISO3166-2-lvl4") or "").replace("BR-", "")
+    return {"lat": float(r[0]["lat"]), "lon": float(r[0]["lon"]), "nome": r[0].get("display_name", endereco),
+            "cidade": cidade, "uf": uf}
+
+
+def buscar_raio(lat: float, lon: float, raio_m: int):
+    filtros = "".join(f'nwr(around:{int(raio_m)},{lat},{lon})["{k}"]["name"];' for k in CHAVES_NEGOCIO)
+    query = f"[out:json][timeout:120];({filtros});out center tags;"
+    dados = _overpass(query)
+    for el in dados.get("elements", []):
+        if eh_negocio(el.get("tags", {})):
+            yield para_linha(el)

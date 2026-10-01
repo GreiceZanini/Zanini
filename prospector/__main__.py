@@ -138,6 +138,13 @@ def cmd_cnpj(args):
     print(f"{len(linhas)} empresas ativas sem indício de site -> {args.saida}", file=sys.stderr)
 
 
+def cmd_indexar(args):
+    from . import cnpj_indice
+    print("Indexando (pode levar vários minutos)...", file=sys.stderr)
+    total = cnpj_indice.criar(args.dados, args.uf)
+    print(f"{total} estabelecimentos ativos indexados em {cnpj_indice.ARQUIVO}", file=sys.stderr)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="prospector", description="Empresas sem site próprio por localização.")
     sub = p.add_subparsers(dest="fonte", required=True)
@@ -174,6 +181,16 @@ def main(argv=None):
     c.add_argument("--sem-razao-social", action="store_true", help="Pula a leitura dos arquivos Empresas (mais rápido)")
     comuns(c, "cnpj_sem_site.csv")
     c.set_defaults(func=cmd_cnpj)
+
+    sv = sub.add_parser("servidor", help="Abre o sistema no navegador (página HTML)")
+    sv.add_argument("--porta", type=int, default=8765)
+    sv.add_argument("--nao-abrir", action="store_true", help="Não abre o navegador automaticamente")
+    sv.set_defaults(func=lambda a: __import__("prospector.servidor", fromlist=["iniciar"]).iniciar(a.porta, not a.nao_abrir))
+
+    ix = sub.add_parser("indexar-cnpj", help="Cria o índice local do CNPJ para o sistema localizar empresas pelo nome")
+    ix.add_argument("--dados", required=True, help="Pasta com Estabelecimentos*.zip, Empresas*.zip e Municipios.zip")
+    ix.add_argument("--uf", required=True, help="UF a indexar, ex.: PR")
+    ix.set_defaults(func=cmd_indexar)
 
     args = p.parse_args(argv)
     args.func(args)

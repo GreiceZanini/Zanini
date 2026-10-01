@@ -1,5 +1,48 @@
 # Prospector: empresas sem site próprio
 
+## Sistema (página HTML)
+
+```bash
+python -m prospector servidor
+```
+
+Abre http://localhost:8765 no navegador. Informe endereço, bairro ou cidade e o raio.
+
+Fluxo:
+
+1. 1ª etapa, perímetro: lista os negócios dentro do raio. Com chave do Google usa o Google Maps (Places API); sem chave usa o OpenStreetMap.
+2. 2ª etapa, empresas sem site: botão "Rodar 2ª etapa".
+   - Com chave da Brave Search API: busca automática na web do site, Instagram, LinkedIn, Facebook e páginas de CNPJ, guardando todos os links encontrados.
+   - Com o índice do CNPJ instalado: localiza CNPJ, razão social, telefones e e-mail na base da Receita Federal pelo nome + município.
+   - Sempre: links de busca prontos (Google, Instagram, Facebook, LinkedIn, CNPJ, Serasa/Reclame Aqui, Google Maps).
+3. Clique numa empresa para ver contatos, dados cadastrais e todos os links. "Exportar Excel" baixa um CSV.
+
+### Chaves
+
+Botão "Chaves" no topo da página. Ficam salvas só no computador, em `dados/config.json`.
+
+| Chave | Para quê | Onde obter |
+|---|---|---|
+| Google Maps Platform | 1ª etapa pelo Google Maps | https://developers.google.com/maps/documentation/places/web-service/get-api-key (ativar Places API New) |
+| Brave Search API | 2ª etapa automática na web | https://api-dashboard.search.brave.com |
+
+### Índice do CNPJ (opcional, gratuito)
+
+Baixe `Estabelecimentos*.zip`, `Empresas*.zip` e `Municipios.zip` do portal dados.gov.br (conjunto "Cadastro Nacional da Pessoa Jurídica - CNPJ") e rode uma vez:
+
+```bash
+python -m prospector indexar-cnpj --dados ./cnpj --uf PR
+```
+
+O vínculo empresa ↔ CNPJ é por semelhança de nome dentro do município; a página mostra a confiança. Confira antes de usar.
+
+### O que não é feito, e por quê
+
+- Serasa, LinkedIn e Instagram não têm API pública de busca de empresas. O sistema encontra esses perfis pela busca web e gera links de consulta; não acessa os sites diretamente, porque a coleta automática viola os termos de uso deles.
+- O Google não informa e-mail nem CNPJ; esses vêm da base da Receita.
+
+## Linha de comando
+
 Busca negócios por localização e gera um CSV (abre no Excel) com as empresas que não têm site próprio, com os contatos disponíveis.
 
 ## Fontes

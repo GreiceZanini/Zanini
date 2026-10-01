@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prospecção de Empresas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --texto: #1d2733; --suave: #5f6b7a; --borda: #dde2e8;
+    --primaria: #1f4e78; --primaria-2: #2c6aa0; --ok: #1e7f4f; --alerta: #b06a00; --erro: #b42318;
+    --chip: #eef3f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12161c; --card: #1b2129; --texto: #e6ebf1; --suave: #9aa6b4; --borda: #2c343f;
+      --primaria: #5b9bd5; --primaria-2: #7db3e6; --ok: #4cc38a; --alerta: #f0a63a; --erro: #f2685d; --chip: #243040;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--texto); }
+  header { background: var(--primaria); color: #fff; padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .status { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; background: rgba(255,255,255,.15); }
+  .pill.on::before { content: "● "; color: #6ee7a8; } .pill.off::before { content: "○ "; color: #ffd08a; }
+  main { max-width: 1400px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--borda); border-radius: 10px; padding: 16px; }
+  .busca { display: grid; grid-template-columns: 2fr 120px 2fr auto; gap: 10px; align-items: end; }
+  @media (max-width: 860px) { .busca { grid-template-columns: 1fr; } }
+  label { display: block; font-size: 12px; color: var(--suave); margin-bottom: 4px; }
+  input, select { width: 100%; padding: 9px 10px; border: 1px solid var(--borda); border-radius: 7px; background: var(--card); color: var(--texto); font: inherit; }
+  button { padding: 9px 16px; border: 0; border-radius: 7px; background: var(--primaria); color: #fff; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  button.sec { background: var(--chip); color: var(--texto); border: 1px solid var(--borda); font-weight: 500; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .grade { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1000px) { .grade { grid-template-columns: 1fr; } }
+  #mapa { height: 380px; border-radius: 8px; }
+  .resumo { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .num { background: var(--chip); border-radius: 8px; padding: 12px; }
+  .num b { display: block; font-size: 24px; } .num span { color: var(--suave); font-size: 12px; }
+  .avisos { margin-top: 10px; font-size: 13px; color: var(--alerta); }
+  .barra { height: 6px; background: var(--chip); border-radius: 9px; overflow: hidden; margin-top: 10px; }
+  .barra > div { height: 100%; width: 0; background: var(--primaria-2); transition: width .3s; }
+  .acoes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .acoes .filtro { width: 260px; }
+  .tabela { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--borda); vertical-align: top; }
+  th { color: var(--suave); font-weight: 600; position: sticky; top: 0; background: var(--card); }
+  tr.linha { cursor: pointer; } tr.linha:hover { background: var(--chip); }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--chip); }
+  .tag.sem { color: var(--erro); } .tag.rede { color: var(--alerta); } .tag.site { color: var(--ok); }
+  .detalhe td { background: var(--chip); }
+  .det { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .det h4 { margin: 0 0 6px; font-size: 13px; }
+  .det ul { margin: 0; padding-left: 18px; } .det li { margin: 3px 0; word-break: break-all; }
+  a { color: var(--primaria-2); }
+  .muted { color: var(--suave); }
+  dialog { border: 1px solid var(--borda); border-radius: 10px; background: var(--card); color: var(--texto); max-width: 520px; width: 92vw; }
+  dialog p { font-size: 13px; color: var(--suave); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Prospecção de Empresas</h1>
+  <div class="status">
+    <span id="st-google" class="pill off">Google Maps</span>
+    <span id="st-brave" class="pill off">Busca web</span>
+    <span id="st-cnpj" class="pill off">Base CNPJ</span>
+    <button class="sec" onclick="document.getElementById('cfg').showModal()">Chaves</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <form class="busca" id="form">
+      <div>
+        <label for="endereco">Endereço, bairro ou cidade</label>
+        <input id="endereco" required placeholder="Ex.: Centro, Toledo, PR  ou  Rua Barão do Rio Branco 100, Toledo">
+      </div>
+      <div>
+        <label for="raio">Raio</label>
+        <select id="raio">
+          <option value="300">300 m</option><option value="500">500 m</option>
+          <option value="1000" selected>1 km</option><option value="2000">2 km</option>
+          <option value="5000">5 km</option><option value="10000">10 km</option>
+        </select>
+      </div>
+      <div>
+        <label for="termos">Tipos de negócio (opcional, separados por vírgula)</label>
+        <input id="termos" placeholder="Em branco = todos os tipos comuns">
+      </div>
+      <button id="btn-buscar" type="submit">Buscar</button>
+    </form>
+    <div class="barra" id="barra" hidden><div></div></div>
+    <div class="avisos" id="avisos"></div>
+  </section>
+
+  <section class="grade">
+    <div class="card"><div id="mapa"></div></div>
+    <div class="card">
+      <div class="resumo">
+        <div class="num"><b id="n-total">0</b><span>empresas no perímetro</span></div>
+        <div class="num"><b id="n-site">0</b><span>com site próprio</span></div>
+        <div class="num"><b id="n-sem">0</b><span>sem site</span></div>
+        <div class="num"><b id="n-enr">0</b><span>pesquisadas na 2ª etapa</span></div>
+      </div>
+      <p class="muted" id="info-fonte" style="margin-top:12px"></p>
+      <p class="muted" style="font-size:12px">1ª etapa: Google Maps (ou OpenStreetMap sem chave). 2ª etapa: empresas sem site são pesquisadas na web (site, Instagram, LinkedIn, Facebook) e na base do CNPJ. Clique numa linha para ver todos os links.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="acoes">
+      <input class="filtro" id="filtro" placeholder="Filtrar por nome, categoria, bairro...">
+      <select id="f-site" style="width:200px">
+        <option value="">Todas</option><option value="sem">Somente sem site</option><option value="com">Somente com site</option>
+      </select>
+      <button class="sec" id="btn-enriquecer" disabled>Rodar 2ª etapa</button>
+      <button class="sec" id="btn-exportar" disabled>Exportar Excel (CSV)</button>
+    </div>
+    <div class="tabela">
+      <table>
+        <thead><tr>
+          <th>Nome</th><th>Categoria</th><th>Telefone</th><th>Site</th><th>Instagram</th>
+          <th>E-mail</th><th>CNPJ</th><th>Endereço</th><th>2ª etapa</th>
+        </tr></thead>
+        <tbody id="corpo"><tr><td colspan="9" class="muted">Faça uma busca para começar.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<dialog id="cfg">
+  <h3>Chaves de acesso</h3>
+  <p>As chaves ficam salvas só neste computador (arquivo dados/config.json) e nunca aparecem na página.</p>
+  <label for="k-google">Google Maps Platform (Places API New)</label>
+  <input id="k-google" type="password" placeholder="Deixe em branco para manter a atual">
+  <p>Sem chave, a 1ª etapa usa o OpenStreetMap.</p>
+  <label for="k-brave">Brave Search API (busca web automática)</label>
+  <input id="k-brave" type="password" placeholder="Deixe em branco para manter a atual">
+  <p>Sem chave, a 2ª etapa gera links de busca prontos para abrir no navegador.</p>
+  <div class="acoes" style="justify-content:flex-end">
+    <button class="sec" onclick="document.getElementById('cfg').close()">Fechar</button>
+    <button id="btn-salvar">Salvar</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let estado = { empresas: [], centro: null, aberto: null };
+let mapa, camada, circulo;
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function link(url, texto) { return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(texto || url)}</a>` : ""; }
+function insta(v) {
+  if (!v) return "";
+  const url = v.startsWith("http") ? v : "https://instagram.com/" + v.replace(/^@/, "");
+  return link(url, v.startsWith("@") ? v : v.replace(/^https?:\/\/(www\.)?instagram\.com\//, "@").replace(/\/.*$/, ""));
+}
+
+async function api(caminho, corpo) {
+  const r = await fetch(caminho, corpo ? { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(corpo) } : {});
+  const j = await r.json();
+  if (!r.ok || j.erro) throw new Error(j.erro || r.statusText);
+  return j;
+}
+
+async function carregarConfig() {
+  const c = await api("/api/config");
+  for (const [k, id] of [["google","st-google"],["brave","st-brave"],["cnpj","st-cnpj"]]) {
+    $(id).className = "pill " + (c[k] ? "on" : "off");
+  }
+}
+
+function iniciarMapa() {
+  mapa = L.map("mapa").setView([-15.8, -47.9], 4);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: '&copy; colaboradores do <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(mapa);
+  camada = L.layerGroup().addTo(mapa);
+}
+
+function temSite(e) { return !!e.site; }
+
+function atualizarResumo() {
+  const es = estado.empresas;
+  $("n-total").textContent = es.length;
+  $("n-site").textContent = es.filter(temSite).length;
+  $("n-sem").textContent = es.filter(e => !temSite(e)).length;
+  $("n-enr").textContent = es.filter(e => e.enr).length;
+}
+
+function tagSite(e) {
+  if (e.site) return `<span class="tag site">${link(e.site, "site")}</span>`;
+  if (e.situacao_site && !["sem_site","site_proprio"].includes(e.situacao_site)) return `<span class="tag rede">só ${esc(e.situacao_site)}</span>`;
+  return `<span class="tag sem">sem site</span>`;
+}
+
+function statusEnr(e) {
+  if (e.site && !e.enr) return '<span class="muted">não precisa</span>';
+  if (!e.enr) return '<span class="muted">pendente</span>';
+  if (e.enr === "...") return "pesquisando…";
+  if (e.enr === "erro") return '<span style="color:var(--erro)">erro</span>';
+  return "concluída";
+}
+
+function renderTabela() {
+  const f = $("filtro").value.toLowerCase(), fs = $("f-site").value;
+  const lista = estado.empresas.filter(e =>
+    (!f || [e.nome, e.categoria, e.endereco].join(" ").toLowerCase().includes(f)) &&
+    (!fs || (fs === "sem" ? !temSite(e) : temSite(e))));
+  if (!lista.length) { $("corpo").innerHTML = '<tr><td colspan="9" class="muted">Nenhuma empresa.</td></tr>'; return; }
+  $("corpo").innerHTML = lista.map(e => `
+    <tr class="linha" data-id="${esc(e.id)}">
+      <td><b>${esc(e.nome)}</b></td><td>${esc(e.categoria)}</td><td>${esc(e.telefone)}</td>
+      <td>${tagSite(e)}</td><td>${insta(e.instagram)}</td><td>${esc(e.email)}</td>
+      <td>${esc(e.cnpj)}</td><td>${esc(e.endereco)}</td><td>${statusEnr(e)}</td>
+    </tr>${estado.aberto === e.id ? detalhe(e) : ""}`).join("");
+  document.querySelectorAll("tr.linha").forEach(tr => tr.onclick = () => {
+    estado.aberto = estado.aberto === tr.dataset.id ? null : tr.dataset.id; renderTabela();
+  });
+}
+
+function detalhe(e) {
+  const links = (e.links || []).map(l => `<li>${esc(l.origem)}: ${link(l.url, l.titulo || l.url)}</li>`).join("") || "<li class='muted'>Nenhum</li>";
+  const manuais = e.links_manuais ? Object.entries(e.links_manuais).map(([k, u]) => `<li>${link(u, k)}</li>`).join("") : "<li class='muted'>Rode a 2ª etapa</li>";
+  const c = e.cnpj_dados;
+  const cnpj = c ? `<ul>
+      <li>CNPJ: <b>${esc(c.cnpj)}</b> (confiança ${Math.round(c.confianca * 100)}%)</li>
+      <li>Razão social: ${esc(c.razao)}</li><li>Nome fantasia: ${esc(c.fantasia)}</li>
+      <li>Telefones: ${esc([c.telefone, c.telefone2].filter(Boolean).join(" / "))}</li>
+      <li>E-mail: ${esc(c.email)}</li><li>Endereço: ${esc(c.endereco)} ${esc(c.bairro)} CEP ${esc(c.cep)}</li>
+      <li>CNAE principal: ${esc(c.cnae)} · Início: ${esc(c.inicio)}</li>
+      <li>${link("https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp", "Conferir no Comprovante da Receita")}</li>
+    </ul>` : `<p class="muted">${e.enr ? "Não localizado na base do CNPJ (ou base não instalada)." : "Rode a 2ª etapa."}</p>`;
+  return `<tr class="detalhe"><td colspan="9"><div class="det">
+    <div><h4>Contato</h4><ul>
+      <li>Telefone: ${esc(e.telefone) || "—"}</li><li>WhatsApp: ${esc(e.whatsapp) || "—"}</li>
+      <li>E-mail: ${esc(e.email) || "—"}</li><li>Site: ${link(e.site) || "—"}</li>
+      <li>Instagram: ${insta(e.instagram) || "—"}</li><li>Facebook: ${link(e.facebook) || "—"}</li>
+      <li>LinkedIn: ${link(e.linkedin) || "—"}</li>
+      ${e.avaliacao ? `<li>Avaliação Google: ${esc(e.avaliacao)} (${esc(e.qtd_avaliacoes)})</li>` : ""}
+    </ul></div>
+    <div><h4>Dados cadastrais (Receita Federal)</h4>${cnpj}</div>
+    <div><h4>Onde foi encontrada</h4><ul>${links}</ul></div>
+    <div><h4>Pesquisar manualmente</h4><ul>${manuais}</ul></div>
+  </div></td></tr>`;
+}
+
+function renderMapa(r) {
+  camada.clearLayers();
+  if (circulo) circulo.remove();
+  circulo = L.circle([r.centro.lat, r.centro.lon], { radius: r.raio, color: "#2c6aa0", fillOpacity: .06 }).addTo(mapa);
+  mapa.fitBounds(circulo.getBounds());
+  for (const e of r.empresas) {
+    if (e.lat == null) continue;
+    L.circleMarker([e.lat, e.lon], { radius: 6, color: e.site ? "#1e7f4f" : "#b42318", fillOpacity: .8 })
+      .bindPopup(`<b>${esc(e.nome)}</b><br>${esc(e.categoria)}<br>${esc(e.telefone)}`).addTo(camada);
+  }
+}
+
+function barra(p) { $("barra").hidden = p === null; if (p !== null) $("barra").firstElementChild.style.width = (p * 100) + "%"; }
+
+$("form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  $("btn-buscar").disabled = true; $("avisos").textContent = "Buscando…"; barra(0.3);
+  try {
+    const r = await api("/api/buscar", {
+      endereco: $("endereco").value, raio: +$("raio").value,
+      termos: $("termos").value.split(",").map(s => s.trim()).filter(Boolean),
+    });
+    estado = { empresas: r.empresas, centro: r.centro, aberto: null };
+    $("avisos").innerHTML = r.avisos.map(esc).join("<br>");
+    $("info-fonte").textContent = `Fonte: ${r.fonte}. Local: ${r.centro.nome}.` + (r.chamadas_google ? ` Chamadas ao Google: ${r.chamadas_google}.` : "");
+    renderMapa(r); atualizarResumo(); renderTabela();
+    $("btn-enriquecer").disabled = !r.empresas.length; $("btn-exportar").disabled = !r.empresas.length;
+  } catch (e) {
+    $("avisos").textContent = "Erro: " + e.message;
+  } finally { $("btn-buscar").disabled = false; barra(null); }
+};
+
+$("btn-enriquecer").onclick = async () => {
+  const fila = estado.empresas.filter(e => !temSite(e) && !e.enr);
+  $("btn-enriquecer").disabled = true;
+  for (let i = 0; i < fila.length; i++) {
+    const e = fila[i]; e.enr = "..."; renderTabela(); barra(i / fila.length);
+    try {
+      const r = await api("/api/enriquecer", { nome: e.nome, cidade: estado.centro.cidade, uf: estado.centro.uf, endereco: e.endereco });
+      e.links_manuais = r.links_manuais;
+      if (r.web) {
+        for (const k of ["site","instagram","facebook","linkedin"]) if (!e[k] && r.web[k]) e[k] = r.web[k];
+        e.links.push(...r.web.links.filter(l => l.url).map(l => ({ titulo: l.titulo, url: l.url, origem: "Busca web" })));
+      }
+      if (r.cnpj) {
+        e.cnpj_dados = r.cnpj; e.cnpj = r.cnpj.cnpj;
+        if (!e.email && r.cnpj.email) e.email = r.cnpj.email;
+        if (!e.telefone && r.cnpj.telefone) e.telefone = r.cnpj.telefone;
+      }
+      e.enr = "ok";
+    } catch (err) { e.enr = "erro"; }
+    atualizarResumo(); renderTabela();
+  }
+  barra(null); $("btn-enriquecer").disabled = false;
+};
+
+$("btn-exportar").onclick = () => {
+  const cols = ["nome","categoria","telefone","whatsapp","email","site","instagram","facebook","linkedin","cnpj","endereco","fonte"];
+  const extra = ["razao_social","links_encontrados"];
+  const linhas = [cols.concat(extra).join(";")];
+  for (const e of estado.empresas) {
+    const v = cols.map(c => e[c] ?? "");
+    v.push(e.cnpj_dados?.razao ?? "", (e.links || []).map(l => l.url).join(" | "));
+    linhas.push(v.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";"));
+  }
+  const blob = new Blob(["﻿" + linhas.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "prospeccao.csv" });
+  a.click(); URL.revokeObjectURL(a.href);
+};
+
+$("btn-salvar").onclick = async () => {
+  const corpo = {};
+  if ($("k-google").value) corpo.google_key = $("k-google").value;
+  if ($("k-brave").value) corpo.brave_key = $("k-brave").value;
+  await api("/api/config", corpo);
+  $("k-google").value = $("k-brave").value = "";
+  $("cfg").close(); carregarConfig();
+};
+
+$("filtro").oninput = renderTabela; $("f-site").onchange = renderTabela;
+iniciarMapa(); carregarConfig();
+</script>
+</body>
+</html>
