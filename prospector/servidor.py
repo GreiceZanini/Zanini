@@ -95,7 +95,7 @@ def buscar(dados: dict) -> dict:
     endereco = (dados.get("endereco") or "").strip()
     raio = max(100, min(int(dados.get("raio") or 1000), 20_000))
     termos = [t.strip() for t in dados.get("termos") or [] if t.strip()] or TERMOS_PADRAO
-    max_chamadas = int(dados.get("max_chamadas") or 60)
+    max_chamadas = max(1, min(int(dados.get("max_chamadas") or 150), 1000))
     centro = osm.geocodificar(endereco)
     cfg = ler_config()
     avisos, empresas, chamadas = [], {}, 0
@@ -104,7 +104,8 @@ def buscar(dados: dict) -> dict:
         ret = retangulo(centro["lat"], centro["lon"], raio)
         for termo in termos:
             if chamadas >= max_chamadas:
-                avisos.append(f"Limite de {max_chamadas} chamadas ao Google atingido; termos restantes não buscados.")
+                faltam = termos[termos.index(termo):]
+                avisos.append(f"Limite de {max_chamadas} consultas ao Google atingido. Não buscados: {', '.join(faltam)}.")
                 break
             try:
                 lugares, n = buscar_area(termo, ret, cfg["google_key"], max_chamadas - chamadas)
