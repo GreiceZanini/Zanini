@@ -146,7 +146,7 @@
   <label for="k-google">Google Maps Platform (Places API New)</label>
   <input id="k-google" type="password" placeholder="Deixe em branco para manter a atual">
   <p>Sem chave, a 1ª etapa usa o OpenStreetMap.</p>
-  <label for="k-brave">Brave Search API (busca web automática)</label>
+  <label for="k-brave">Brave Search API (busca web automática; aceita chave Web Search ou LLM Context)</label>
   <input id="k-brave" type="password" placeholder="Deixe em branco para manter a atual">
   <p>Sem chave, a 2ª etapa gera links de busca prontos para abrir no navegador.</p>
   <div class="acoes" style="justify-content:flex-end">
@@ -233,6 +233,14 @@ function renderTabela() {
   });
 }
 
+function contatosWeb(e) {
+  const c = e.contatos_web;
+  if (!c) return `<p class="muted">${e.enr ? "Busca web não configurada." : "Rode a 2ª etapa."}</p>`;
+  const itens = [["E-mail","emails"],["Telefone","telefones"],["CNPJ","cnpjs"]].flatMap(([rot, k]) =>
+    (c[k] || []).map(x => `<li>${rot}: <b>${esc(x.valor)}</b> (${link(x.fonte, "fonte")})</li>`));
+  return itens.length ? `<ul>${itens.join("")}</ul>` : '<p class="muted">Nada encontrado.</p>';
+}
+
 function detalhe(e) {
   const links = (e.links || []).map(l => `<li>${esc(l.origem)}: ${link(l.url, l.titulo || l.url)}</li>`).join("") || "<li class='muted'>Nenhum</li>";
   const manuais = e.links_manuais ? Object.entries(e.links_manuais).map(([k, u]) => `<li>${link(u, k)}</li>`).join("") : "<li class='muted'>Rode a 2ª etapa</li>";
@@ -254,6 +262,7 @@ function detalhe(e) {
       ${e.avaliacao ? `<li>Avaliação Google: ${esc(e.avaliacao)} (${esc(e.qtd_avaliacoes)})</li>` : ""}
     </ul></div>
     <div><h4>Dados cadastrais (Receita Federal)</h4>${cnpj}</div>
+    <div><h4>Dados encontrados na web</h4>${contatosWeb(e)}</div>
     <div><h4>Onde foi encontrada</h4><ul>${links}</ul></div>
     <div><h4>Pesquisar manualmente</h4><ul>${manuais}</ul></div>
   </div></td></tr>`;
@@ -308,6 +317,11 @@ $("btn-enriquecer").onclick = async () => {
       if (r.web) {
         for (const k of ["site","instagram","facebook","linkedin"]) if (!e[k] && r.web[k]) e[k] = r.web[k];
         e.links.push(...r.web.links.filter(l => l.url).map(l => ({ titulo: l.titulo, url: l.url, origem: "Busca web" })));
+        e.contatos_web = r.web.contatos;
+        const c = r.web.contatos || {};
+        if (!e.email && c.emails?.length) e.email = c.emails[0].valor;
+        if (!e.telefone && c.telefones?.length) e.telefone = c.telefones[0].valor;
+        if (!e.cnpj && c.cnpjs?.length === 1) e.cnpj = c.cnpjs[0].valor;
       }
       if (r.cnpj) {
         e.cnpj_dados = r.cnpj; e.cnpj = r.cnpj.cnpj;

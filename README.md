@@ -24,7 +24,7 @@ Botão "Chaves" no topo da página. Ficam salvas só no computador, em `dados/co
 | Chave | Para quê | Onde obter |
 |---|---|---|
 | Google Maps Platform | 1ª etapa pelo Google Maps | https://developers.google.com/maps/documentation/places/web-service/get-api-key (ativar Places API New) |
-| Brave Search API | 2ª etapa automática na web | https://api-dashboard.search.brave.com |
+| Brave Search API (Web Search ou LLM Context) | 2ª etapa automática na web; com LLM Context também extrai e-mail, telefone e CNPJ do conteúdo das páginas | https://api-dashboard.search.brave.com |
 
 ### Índice do CNPJ (opcional, gratuito)
 

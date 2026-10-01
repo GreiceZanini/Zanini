@@ -117,3 +117,34 @@ class TestFichaGoogle(unittest.TestCase):
             self.assertIsNone(servidor.ficha_google("Padaria X", "Toledo", "PR", "k", 0, 0))
         with mock.patch.object(servidor, "buscar_paginas", side_effect=falso([longe, perto])):
             self.assertEqual(servidor.ficha_google("Padaria X", "Toledo", "PR", "k", 0, 0)["site"], "https://padariax.com.br")
+
+
+class TestBraveModos(unittest.TestCase):
+    def setUp(self):
+        busca_web._modo["atual"] = None
+
+    def test_cai_para_llm_context_quando_chave_e_de_outro_produto(self):
+        def falso_get(url, chave):
+            if "/web/search" in url:
+                raise busca_web.ErroBusca("HTTP 403: plano não inclui este produto")
+            return {"grounding": {"generic": [{
+                "url": "https://olesociety.com.br/contato", "title": "Olé Futebol Society - Contato",
+                "snippets": ["Olé Futebol Society. Telefone (54) 99931-3505. E-mail contato@olesociety.com.br"],
+            }]}}
+
+        with mock.patch.object(busca_web, "_get", side_effect=falso_get):
+            r = busca_web.pesquisar("Olé Futebol Society", "Passo Fundo RS", "k")
+        self.assertEqual(r["modo"], "llm")
+        self.assertEqual(r["site"], "https://olesociety.com.br/contato")
+        self.assertEqual(r["contatos"]["emails"][0]["valor"], "contato@olesociety.com.br")
+        self.assertEqual(r["contatos"]["telefones"][0]["valor"], "(54) 99931-3505")
+
+    def test_erro_real_nao_troca_de_modo(self):
+        with mock.patch.object(busca_web, "_get", side_effect=busca_web.ErroBusca("HTTP 429: limite")):
+            with self.assertRaises(busca_web.ErroBusca):
+                busca_web._brave("x", "k")
+        self.assertIsNone(busca_web._modo["atual"])
+
+    def test_extrair_cnpj_formata(self):
+        c = busca_web.extrair_contatos([{"url": "u", "trecho": "CNPJ 12345678000190"}])
+        self.assertEqual(c["cnpjs"][0]["valor"], "12.345.678/0001-90")
