@@ -46,6 +46,24 @@ def salvar_config(novos: dict):
     CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
+def testar_chaves(corpo: dict) -> dict:
+    """Testa as chaves recém-salvas com 1 consulta cada, para o erro aparecer na hora."""
+    res = {}
+    if corpo.get("google_key"):
+        try:
+            next(buscar_paginas("padaria São Paulo", corpo["google_key"].strip()), None)
+            res["google"] = "ok"
+        except Exception as e:
+            res["google"] = f"erro: {e}"[:400]
+    if corpo.get("brave_key"):
+        try:
+            busca_web._brave("padaria São Paulo", corpo["brave_key"].strip(), 1)
+            res["brave"] = f"ok ({busca_web._modo['atual']})"
+        except Exception as e:
+            res["brave"] = f"erro: {e}"[:400]
+    return res
+
+
 def _distancia(lat1, lon1, lat2, lon2):
     r = 6_371_000
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -206,8 +224,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/enriquecer":
                 self._json(enriquecer(self._corpo()))
             elif self.path == "/api/config":
-                salvar_config(self._corpo())
-                self._json({"ok": True})
+                corpo = self._corpo()
+                salvar_config(corpo)
+                self._json({"ok": True, "testes": testar_chaves(corpo)})
             else:
                 self._json({"erro": "não encontrado"}, 404)
         except Exception as e:

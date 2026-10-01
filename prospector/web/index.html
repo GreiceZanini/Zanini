@@ -74,6 +74,10 @@
 </header>
 
 <main>
+  <section class="card" id="alerta-chaves" hidden style="border-color:var(--alerta)">
+    <b>Configuração incompleta.</b> <span id="alerta-texto"></span>
+    <button style="margin-left:8px" onclick="document.getElementById('cfg').showModal()">Configurar chaves</button>
+  </section>
   <section class="card">
     <form class="busca" id="form">
       <div>
@@ -180,6 +184,11 @@ async function carregarConfig() {
   for (const [k, id] of [["google","st-google"],["brave","st-brave"],["cnpj","st-cnpj"]]) {
     $(id).className = "pill " + (c[k] ? "on" : "off");
   }
+  const faltas = [];
+  if (!c.google) faltas.push("Sem chave do Google: a busca usa o OpenStreetMap, que quase não tem telefone nem site.");
+  if (!c.brave) faltas.push("Sem chave da Brave: a 2ª etapa só gera links para pesquisa manual.");
+  $("alerta-texto").textContent = faltas.join(" ");
+  $("alerta-chaves").hidden = !faltas.length;
 }
 
 function iniciarMapa() {
@@ -353,7 +362,14 @@ $("btn-salvar").onclick = async () => {
   const corpo = {};
   if ($("k-google").value) corpo.google_key = $("k-google").value;
   if ($("k-brave").value) corpo.brave_key = $("k-brave").value;
-  await api("/api/config", corpo);
+  if (!Object.keys(corpo).length) { $("cfg").close(); return; }
+  $("btn-salvar").disabled = true; $("btn-salvar").textContent = "Testando…";
+  try {
+    const r = await api("/api/config", corpo);
+    const msgs = Object.entries(r.testes || {}).map(([k, v]) => `${k === "google" ? "Google Maps" : "Busca web (Brave)"}: ${v.startsWith("ok") ? "chave funcionando" : v}`);
+    alert("Chaves salvas.\n\n" + msgs.join("\n"));
+  } catch (e) { alert("Erro ao salvar: " + e.message); }
+  $("btn-salvar").disabled = false; $("btn-salvar").textContent = "Salvar";
   $("k-google").value = $("k-brave").value = "";
   $("cfg").close(); carregarConfig();
 };
