@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prospecção de Empresas</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --texto: #1d2733; --suave: #5f6b7a; --borda: #dde2e8;
@@ -176,6 +176,8 @@ async function carregarConfig() {
 }
 
 function iniciarMapa() {
+  // O mapa é opcional: se a biblioteca não carregar (sem internet/bloqueio), o resto funciona
+  if (typeof L === "undefined") { $("mapa").innerHTML = '<p class="muted">Mapa indisponível (biblioteca não carregou).</p>'; return; }
   mapa = L.map("mapa").setView([-15.8, -47.9], 4);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; colaboradores do <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -251,6 +253,7 @@ function detalhe(e) {
 }
 
 function renderMapa(r) {
+  if (!mapa) return;
   camada.clearLayers();
   if (circulo) circulo.remove();
   circulo = L.circle([r.centro.lat, r.centro.lon], { radius: r.raio, color: "#2c6aa0", fillOpacity: .06 }).addTo(mapa);
