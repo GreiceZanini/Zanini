@@ -54,6 +54,16 @@ class TestOSM(unittest.TestCase):
         self.assertEqual(l["instagram"], "@loja")
 
 
+class TestEhNegocio(unittest.TestCase):
+    def test_filtros(self):
+        self.assertTrue(osm.eh_negocio({"shop": "bakery"}))
+        self.assertTrue(osm.eh_negocio({"leisure": "fitness_centre"}))
+        self.assertFalse(osm.eh_negocio({"leisure": "park"}))
+        self.assertFalse(osm.eh_negocio({"amenity": "school"}))
+        self.assertFalse(osm.eh_negocio({"tourism": "attraction"}))
+        self.assertFalse(osm.eh_negocio({"office": "government"}))
+
+
 class TestCNPJ(unittest.TestCase):
     def test_situacao_email(self):
         self.assertEqual(cnpj.situacao_email("Joao@Gmail.com"), ("email_gratuito", "gmail.com"))

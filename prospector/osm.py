@@ -24,7 +24,13 @@ AMENITY_IGNORAR = {
     "grave_yard", "courthouse", "prison", "social_facility", "community_centre",
     "public_building", "university", "college", "library", "bicycle_parking",
     "motorcycle_parking", "atm", "telephone", "clock", "hunting_stand", "vending_machine",
+    "taxi", "post_office", "bank", "marketplace",
 }
+# Para leisure/tourism só valem os valores que são negócios (parques, campos e atrações ficam fora)
+LEISURE_NEGOCIO = {"fitness_centre", "sports_centre", "swimming_pool", "dance", "amusement_arcade",
+                   "escape_game", "bowling_alley", "sauna", "water_park", "trampoline_park"}
+TOURISM_NEGOCIO = {"hotel", "motel", "guest_house", "hostel", "apartment", "camp_site", "chalet"}
+OFFICE_IGNORAR = {"government", "ngo", "political_party", "religion", "association", "diplomatic"}
 
 CHAVES_NEGOCIO = ["shop", "craft", "office", "amenity", "healthcare", "tourism", "leisure"]
 
@@ -109,12 +115,27 @@ def para_linha(el):
     }
 
 
+def eh_negocio(tags) -> bool:
+    """Descarta locais públicos e não comerciais quando nenhuma categoria foi informada."""
+    if "shop" in tags or "craft" in tags or "healthcare" in tags:
+        return True
+    if "office" in tags:
+        return tags["office"] not in OFFICE_IGNORAR
+    if "amenity" in tags:
+        return tags["amenity"] not in AMENITY_IGNORAR
+    if "leisure" in tags:
+        return tags["leisure"] in LEISURE_NEGOCIO
+    if "tourism" in tags:
+        return tags["tourism"] in TOURISM_NEGOCIO
+    return False
+
+
 def buscar(local: str, categorias: list[str] | None = None):
     aid, _ = area_id(local)
     query = montar_query(aid, categorias or [])
     dados = _get_json(OVERPASS, urllib.parse.urlencode({"data": query}).encode())
     for el in dados.get("elements", []):
         tags = el.get("tags", {})
-        if not categorias and tags.get("amenity") in AMENITY_IGNORAR and len(tags.keys() & set(CHAVES_NEGOCIO)) == 1:
+        if not categorias and not eh_negocio(tags):
             continue
         yield para_linha(el)
