@@ -652,6 +652,70 @@ class TradingBot:
         log.error(message)
         self._set_phase(Phase.ERROR)
 
+    # -- atualizacoes em execucao (alimentar) ---------------------------------------------
+    def update_next_targets(self, targets: List[Target], append: bool = False) -> None:
+        """Substitui ou acrescenta moedas seguintes. Valida filtros e moeda de cotacao antes de aplicar."""
+        quote = self.filters[self.cfg.first.symbol].quote_asset
+        for t in targets:
+            if t.symbol not in self.filters:
+                f = self.ex.filters(t.symbol)
+                if f.quote_asset != quote:
+                    raise ValueError(f"{t.symbol} usa {f.quote_asset}; a rodada opera em {quote}")
+                if f.min_notional > ZERO and self.cfg.quote_amount < f.min_notional:
+                    raise ValueError(f"{t.symbol}: valor por operacao abaixo do minimo {dec_str(f.min_notional)}")
+                self.filters[t.symbol] = f
+        if append:
+            existing = {t.symbol for t in self.cfg.next_targets}
+            self.cfg.next_targets.extend(t for t in targets if t.symbol not in existing)
+        else:
+            self.cfg.next_targets = list(targets)
+        log.info("moedas seguintes atualizadas: %s",
+                 ", ".join(f"{t.symbol}@{dec_str(t.trigger)}" for t in self.cfg.next_targets) or "(nenhuma)")
+        self.save_state()
+        if self.phase == Phase.WATCHING_NEXT:
+            self.on_symbols_changed(self.watched_symbols())
+
+    def update_rules(self, rules: ExitRules) -> None:
+        """Troca as regras de saida; recalcula os niveis da posicao aberta a partir da entrada e da maxima."""
+        rules.validate()
+        self.cfg.rules = rules
+        pos = self.position
+        if pos:
+            pos.stop_loss_price = rules.stop_loss_price(pos.entry_price)
+            pos.activation_price = rules.activation_price(pos.entry_price)
+            if pos.trailing_armed:
+                pos.trailing_stop_price = rules.trailing_stop_price(pos.highest)
+            log.info("regras atualizadas (%s): stop-loss=%s ativacao=%s trailing=%s", rules.describe(),
+                     dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
+                     dec_str(pos.trailing_stop_price) if pos.trailing_stop_price is not None else "nao armado")
+        else:
+            log.info("regras atualizadas para as proximas compras: %s", rules.describe())
+        self.save_state()
+
+    def update_quote_amount(self, amount: Decimal) -> None:
+        if amount <= ZERO:
+            raise ValueError("valor por compra deve ser positivo")
+        for sym, f in self.filters.items():
+            if f.min_notional > ZERO and amount < f.min_notional:
+                raise ValueError(f"{sym}: valor {dec_str(amount)} abaixo do minimo {dec_str(f.min_notional)}")
+        self.cfg.quote_amount = amount
+        log.info("valor por compra atualizado: %s", dec_str(amount))
+        self.save_state()
+
+    def snapshot(self) -> dict:
+        """Estado atual em formato serializavel (usado pela interface web)."""
+        return {
+            "phase": self.phase, "mode": self.cfg.mode, "quote_amount": dec_str(self.cfg.quote_amount),
+            "rules": self.cfg.rules.describe(), "repeat": self.cfg.repeat,
+            "first": {"symbol": self.cfg.first.symbol, "trigger": dec_str(self.cfg.first.trigger)},
+            "next": [{"symbol": t.symbol, "trigger": dec_str(t.trigger)} for t in self.cfg.next_targets],
+            "watched": self.watched_symbols(),
+            "prices": {k: dec_str(v) for k, v in self.last_prices.items()},
+            "position": self.position.to_dict() if self.position else None,
+            "realized_pnl": dec_str(self.realized_pnl), "cycles_done": self.cycles_done,
+            "error": self.error_message, "status_line": self.status_line(),
+        }
+
     # -- parada segura --------------------------------------------------------------------
     def shutdown(self, sell_position: bool) -> None:
         if self.cfg.mode != "simulate":
@@ -962,6 +1026,11 @@ def run_live_loop(bot: TradingBot, feed: PriceFeed, q: "queue.Queue", args, stop
                     bot.handle_price(symbol, price, now)
             elif item[0] == "error":
                 log.error("websocket: %s", item[1])
+            elif item[0] == "command":
+                try:
+                    item[1](bot)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("comando rejeitado: %s", exc)
         if now - last_msg > args.watchdog_seconds:
             log.warning("sem precos ha %ds; consultando REST e reconectando", int(now - last_msg))
             for sym in bot.watched_symbols():

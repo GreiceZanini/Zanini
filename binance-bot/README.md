@@ -72,6 +72,27 @@ Parâmetros principais:
 
 Todos os símbolos de uma rodada devem usar a mesma moeda de cotação (ex.: todos em USDT).
 
+### Página "Sistema" (interface web local)
+
+Para operar pelo navegador em vez da linha de comando:
+
+```bash
+python sistema.py            # abre http://127.0.0.1:8080
+```
+
+A página tem três abas, com cada campo explicado em português:
+
+- Iniciar: modo (simulação, testnet, live com confirmação), moeda inicial, preço de gatilho, direção, valor por compra,
+  stop-loss, lucro mínimo que arma o trailing, recuo do trailing, lista de moedas seguintes, repetir lista,
+  vender ao parar, retomar estado e opções avançadas.
+- Alimentar: com o bot rodando, substitui ou acrescenta moedas seguintes, troca as regras de venda (níveis da posição
+  aberta são recalculados) e altera o valor das próximas compras.
+- Parar: mostra a posição aberta e para com segurança, vendendo ou não a posição.
+
+Ao lado ficam a situação em tempo real (fase, preços, níveis, resultado) e o log. O servidor escuta só em
+127.0.0.1 e não tem autenticação; não exponha na rede. As chaves continuam vindo das variáveis de ambiente do
+processo `sistema.py`.
+
 ### Testar a lógica sem rede (replay)
 
 ```bash
@@ -132,5 +153,5 @@ pip install -r requirements-dev.txt
 python -m pytest -q tests
 ```
 
-Os testes cobrem gatilhos (auto/explícito), stop-loss, armar/subir trailing, venda na reversão, lista de moedas
+Os testes cobrem a página Sistema (iniciar, alimentar, parar e API HTTP) e gatilhos (auto/explícito), stop-loss, armar/subir trailing, venda na reversão, lista de moedas
 seguintes, repetição, taxas, falhas de ordem, salvar/retomar estado e o parse das respostas de ordem da Binance.
