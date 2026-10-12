@@ -155,3 +155,12 @@ def test_http_api_roundtrip(tmp_path):
         server.shutdown()
         server.server_close()
         logging.getLogger().removeHandler(memlog)
+
+
+def test_payload_money_rules(tmp_path):
+    payload = {**START, "symbol": "BTCBRL", "stop_loss": {"type": "money", "value": "2"},
+               "activation": {"type": "money", "value": "1,5"}, "trail": {"type": "money", "value": "1"}}
+    cfg = sistema.config_from_payload(payload, tmp_path)
+    assert cfg.rules.stop_loss_money == D("2") and cfg.rules.activation_money == D("1.5") and cfg.rules.trail_money == D("1")
+    with pytest.raises(ValueError, match="unidade"):
+        sistema.config_from_payload({**payload, "trail": {"type": "reais", "value": "1"}}, tmp_path)

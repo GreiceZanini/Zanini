@@ -314,3 +314,48 @@ def test_run_live_loop_with_fake_feed():
     bb.run_live_loop(bot, feed, q, args, threading.Event())
     assert bot.phase == Phase.FINISHED
     assert subscribed[0] == ["BTCUSDT"] and subscribed[-1] == [] and "restart" not in subscribed
+
+
+# ----------------------------------------------------------------------------- regras em dinheiro (R$ na operacao)
+def test_money_rules_convert_to_price_by_quantity():
+    r = ExitRules(stop_loss_money=D("2"), activation_money=D("1.5"), trail_money=D("1"))
+    r.validate()
+    qty = D("0.0001")  # R$50 de BTC a R$500000
+    assert r.stop_loss_price(D("500000"), qty) == D("480000")      # perder no maximo R$2
+    assert r.activation_price(D("500000"), qty) == D("515000")     # lucro minimo de R$1,50
+    assert r.trailing_stop_price(D("520000"), qty) == D("510000")  # recuo de R$1 a partir da maxima
+    with pytest.raises(ValueError):
+        r.stop_loss_price(D("500000"))                              # sem quantidade nao da para converter
+    with pytest.raises(ValueError):
+        ExitRules(stop_loss_money=D("2"), stop_loss_pct=D("1"), activation_pct=D("3"), trail_pct=D("1")).validate()
+
+
+def test_money_rules_full_cycle_in_brl():
+    def brl_filters(symbol):
+        return SymbolFilters(symbol=symbol, base_asset=symbol[:-3], quote_asset="BRL",
+                             step_size=D("0.00000001"), min_qty=D("0.00000001"), tick_size=D("1"), min_notional=D("10"))
+    cfg = BotConfig(mode="simulate", first=Target.parse("BTCBRL:500000"), next_targets=[], quote_amount=D("50"),
+                    rules=ExitRules(stop_loss_money=D("2"), activation_money=D("1.5"), trail_money=D("1")))
+    bot = TradingBot(cfg, SimulatedExchange(fee_pct=D("0"), filters_source=brl_filters))
+    bot.prepare()
+    bot.handle_price("BTCBRL", D("500000"))
+    pos = bot.position
+    assert pos.qty == D("0.0001")
+    assert pos.stop_loss_price == D("480000") and pos.activation_price == D("515000")
+    bot.handle_price("BTCBRL", D("515000"))       # lucro de R$1,50 -> arma
+    assert pos.trailing_armed and pos.trailing_stop_price == D("505000")
+    bot.handle_price("BTCBRL", D("530000"))       # maxima: posicao vale R$53 -> vende se cair a R$52
+    assert pos.trailing_stop_price == D("520000")
+    bot.handle_price("BTCBRL", D("521000"))
+    assert bot.phase == Phase.HOLDING
+    bot.handle_price("BTCBRL", D("520000"))       # recuou R$1 -> vende com ~R$2 de lucro
+    assert bot.phase == Phase.FINISHED
+    assert bot.realized_pnl == D("2")
+
+
+def test_cli_money_rules():
+    args = bb.build_parser().parse_args(["--symbol", "BTCBRL", "--buy-trigger", "500000", "--quote-amount", "50",
+                                         "--stop-loss-money", "2", "--profit-activation-money", "1.5", "--trail-money", "1"])
+    cfg = bb.config_from_args(args)
+    assert cfg.rules.trail_money == D("1") and cfg.rules.uses_money()
+    assert "em dinheiro" in cfg.rules.describe()

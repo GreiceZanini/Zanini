@@ -61,27 +61,28 @@ def _dec(payload: dict, key: str, label: str, required: bool = True) -> Optional
 
 
 def _rule(payload: dict, key: str, label: str, required: bool = True):
-    """Le {"type": "pct"|"abs", "value": "..."} e devolve (pct, abs)."""
+    """Le {"type": "pct"|"abs"|"money", "value": "..."} e devolve (pct, abs, money)."""
     item = payload.get(key) or {}
     if not isinstance(item, dict):
         raise ValueError(f"campo '{label}' em formato invalido")
     value = _dec(item, "value", label, required=required)
     if value is None:
-        return None, None
+        return None, None, None
     kind = (item.get("type") or "pct").lower()
-    if kind not in ("pct", "abs"):
-        raise ValueError(f"campo '{label}': tipo deve ser 'pct' ou 'abs'")
-    return (value, None) if kind == "pct" else (None, value)
+    if kind not in ("pct", "abs", "money"):
+        raise ValueError(f"campo '{label}': unidade deve ser 'pct', 'abs' ou 'money'")
+    return {"pct": (value, None, None), "abs": (None, value, None), "money": (None, None, value)}[kind]
 
 
 def rules_from_payload(payload: dict, required: bool = True) -> Optional[bb.ExitRules]:
     sl = _rule(payload, "stop_loss", "stop-loss", required)
     act = _rule(payload, "activation", "lucro minimo para armar o trailing", required)
     tr = _rule(payload, "trail", "recuo do trailing", required)
-    if not required and all(v is None for pair in (sl, act, tr) for v in pair):
+    if not required and all(v is None for group in (sl, act, tr) for v in group):
         return None
-    rules = bb.ExitRules(stop_loss_pct=sl[0], stop_loss_abs=sl[1], activation_pct=act[0], activation_abs=act[1],
-                         trail_pct=tr[0], trail_abs=tr[1])
+    rules = bb.ExitRules(stop_loss_pct=sl[0], stop_loss_abs=sl[1], stop_loss_money=sl[2],
+                         activation_pct=act[0], activation_abs=act[1], activation_money=act[2],
+                         trail_pct=tr[0], trail_abs=tr[1], trail_money=tr[2])
     rules.validate()
     return rules
 

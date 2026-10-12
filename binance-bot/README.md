@@ -61,9 +61,9 @@ Parâmetros principais:
 | `--symbol`, `--buy-trigger` | moeda inicial e preço de gatilho |
 | `--buy-direction auto\|below\|above` | `auto` (padrão): compra quando o preço **atinge** o gatilho vindo de onde estiver (se está acima, espera cair até ele; se está abaixo, espera subir). `below`/`above` fixam a direção |
 | `--quote-amount` | valor de cada compra na moeda de cotação (ex.: USDT) |
-| `--stop-loss-pct` ou `--stop-loss-abs` | distância do stop-loss abaixo do preço de compra |
-| `--profit-activation-pct` ou `--profit-activation-abs` | lucro mínimo que arma o trailing |
-| `--trail-pct` ou `--trail-abs` | recuo a partir da máxima que dispara a venda |
+| `--stop-loss-pct`, `--stop-loss-abs` ou `--stop-loss-money` | distância do stop-loss abaixo do preço de compra |
+| `--profit-activation-pct`, `-abs` ou `-money` | lucro mínimo que arma o trailing |
+| `--trail-pct`, `--trail-abs` ou `--trail-money` | recuo a partir da máxima que dispara a venda |
 | `--next SIMBOLO:PRECO` | moeda seguinte com gatilho; repita para várias |
 | `--repeat` | após vender a moeda seguinte, volta a observar a lista indefinidamente (padrão: encerra) |
 | `--sell-on-stop` | ao parar com Ctrl+C, vende a mercado a posição aberta |
@@ -92,6 +92,29 @@ A página tem três abas, com cada campo explicado em português:
 Ao lado ficam a situação em tempo real (fase, preços, níveis, resultado) e o log. O servidor escuta só em
 127.0.0.1 e não tem autenticação; não exponha na rede. As chaves continuam vindo das variáveis de ambiente do
 processo `sistema.py`.
+
+### Operar em reais e regras em dinheiro
+
+Use pares terminados em BRL (ex.: BTCBRL, ETHBRL, SOLBRL). Assim o valor por compra e as regras em dinheiro
+ficam em reais. Cada regra aceita uma destas unidades:
+
+| Unidade | Significado | Exemplo |
+|---|---|---|
+| pct | percentual do preço de compra (no trailing, da máxima) | `--trail-pct 1` = recuo de 1% |
+| money | valor em dinheiro sobre a operação inteira | `--trail-money 1` = recuo de R$1 em uma compra de R$50 |
+| abs | distância no preço por unidade da moeda | `--trail-abs 5000` = R$5.000 no preço do BTC |
+
+Exemplo: comprar R$50 de BTC quando chegar a R$500.000, aceitar perder no máximo R$2, armar o trailing com
+R$1,50 de lucro e vender quando recuar R$1 a partir da máxima:
+
+```bash
+python binance_bot.py --mode simulate --symbol BTCBRL --buy-trigger 500000 --quote-amount 50 \
+  --stop-loss-money 2 --profit-activation-money 1.5 --trail-money 1
+```
+
+A unidade em dinheiro é convertida em distância de preço dividindo pela quantidade comprada (R$1 ÷ 0,0001 BTC =
+R$10.000 no preço). Os pares em BRL têm menos liquidez que os em USDT; em valores pequenos isso não costuma
+atrapalhar, mas o preço executado pode ficar um pouco pior.
 
 ### Testar a lógica sem rede (replay)
 

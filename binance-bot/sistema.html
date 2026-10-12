@@ -40,7 +40,7 @@
   label.field > span.help { display: block; color: var(--muted); font-size: 12.5px; margin: 2px 0 5px; }
   input[type=text], input[type=number], select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .rule { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
+  .rule { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
   .check { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; }
   .check input { margin-top: 4px; }
   .check .help { color: var(--muted); font-size: 12.5px; display: block; }
@@ -116,7 +116,7 @@
           <div class="grid three">
             <label class="field">
               <span class="name">Moeda inicial</span>
-              <span class="help">Par da Binance, ex.: BTCUSDT.</span>
+              <span class="help">Par da Binance. Para operar em reais use pares terminados em BRL, ex.: BTCBRL.</span>
               <input type="text" name="symbol" placeholder="BTCUSDT" required>
             </label>
             <label class="field">
@@ -137,7 +137,7 @@
           <div class="grid two">
             <label class="field">
               <span class="name">Valor por compra</span>
-              <span class="help">Na moeda de cotação (ex.: 50 = 50 USDT). Vale para a compra inicial e para as recompras.</span>
+              <span class="help">Na moeda de cotação do par: com BTCBRL, 50 = R$50; com BTCUSDT, 50 = 50 USDT. Vale para a compra inicial e para as recompras.</span>
               <input type="text" name="quote_amount" inputmode="decimal" placeholder="50" required>
             </label>
           </div>
@@ -145,30 +145,30 @@
 
         <fieldset>
           <legend>Regras de venda</legend>
-          <p class="intro">Em cada regra escolha percentual (%) ou valor absoluto (na moeda de cotação). A venda ocorre pelo que acionar primeiro: stop-loss ou trailing.</p>
+          <p class="intro">Em cada regra escolha a unidade: % do preço, em dinheiro sobre a operação inteira (ex.: recuo de R$1 em uma compra de R$50) ou distância no preço por unidade da moeda. A venda ocorre pelo que acionar primeiro: stop-loss ou trailing.</p>
           <div class="grid three">
             <label class="field">
               <span class="name">Stop-loss</span>
-              <span class="help">Distância abaixo do preço de compra. Ex.: 2% ou 1200.</span>
+              <span class="help">Quanto aceita perder. Ex.: 2% ou R$2 em dinheiro.</span>
               <div class="rule">
                 <input type="text" name="stop_loss_value" inputmode="decimal" placeholder="2" required>
-                <select name="stop_loss_type"><option value="pct">%</option><option value="abs">valor</option></select>
+                <select name="stop_loss_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select>
               </div>
             </label>
             <label class="field">
               <span class="name">Lucro mínimo para armar o trailing</span>
-              <span class="help">Acima do preço de compra. Ao atingir, o bot para de vender neste ponto e passa a seguir a alta.</span>
+              <span class="help">Lucro a partir do qual o trailing é armado. Ex.: 3% ou R$1,50 em dinheiro. Ao atingir, o bot não vende: passa a seguir a alta.</span>
               <div class="rule">
                 <input type="text" name="activation_value" inputmode="decimal" placeholder="3" required>
-                <select name="activation_type"><option value="pct">%</option><option value="abs">valor</option></select>
+                <select name="activation_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select>
               </div>
             </label>
             <label class="field">
               <span class="name">Recuo do trailing</span>
-              <span class="help">Queda a partir da máxima atingida que dispara a venda. Ex.: 1%.</span>
+              <span class="help">Queda a partir da máxima atingida que dispara a venda. Ex.: 1% ou R$1 em dinheiro.</span>
               <div class="rule">
                 <input type="text" name="trail_value" inputmode="decimal" placeholder="1" required>
-                <select name="trail_type"><option value="pct">%</option><option value="abs">valor</option></select>
+                <select name="trail_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select>
               </div>
             </label>
           </div>
@@ -256,13 +256,13 @@
           <div class="grid three">
             <label class="field"><span class="name">Stop-loss</span>
               <div class="rule"><input type="text" name="stop_loss_value" inputmode="decimal" placeholder="2">
-              <select name="stop_loss_type"><option value="pct">%</option><option value="abs">valor</option></select></div></label>
+              <select name="stop_loss_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select></div></label>
             <label class="field"><span class="name">Lucro mínimo para armar o trailing</span>
               <div class="rule"><input type="text" name="activation_value" inputmode="decimal" placeholder="3">
-              <select name="activation_type"><option value="pct">%</option><option value="abs">valor</option></select></div></label>
+              <select name="activation_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select></div></label>
             <label class="field"><span class="name">Recuo do trailing</span>
               <div class="rule"><input type="text" name="trail_value" inputmode="decimal" placeholder="1">
-              <select name="trail_type"><option value="pct">%</option><option value="abs">valor</option></select></div></label>
+              <select name="trail_type"><option value="pct">%</option><option value="money">em dinheiro (R$ na operação)</option><option value="abs">no preço (por unidade)</option></select></div></label>
           </div>
         </fieldset>
 

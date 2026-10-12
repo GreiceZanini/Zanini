@@ -176,48 +176,68 @@ class Target:
 
 @dataclass
 class ExitRules:
-    """Regras de saida. Para cada item, usa-se pct OU abs (nunca ambos)."""
+    """Regras de saida. Para cada regra, informe exatamente UMA unidade:
+    pct   -> percentual do preco de compra (ou da maxima, no trailing);
+    abs   -> distancia no preco por unidade da moeda (na moeda de cotacao);
+    money -> valor em dinheiro sobre a operacao inteira (ex.: recuo de R$1 em uma compra de R$50).
+    A unidade money e convertida em distancia de preco dividindo pela quantidade comprada.
+    """
     stop_loss_pct: Optional[Decimal] = None
     stop_loss_abs: Optional[Decimal] = None
+    stop_loss_money: Optional[Decimal] = None
     activation_pct: Optional[Decimal] = None
     activation_abs: Optional[Decimal] = None
+    activation_money: Optional[Decimal] = None
     trail_pct: Optional[Decimal] = None
     trail_abs: Optional[Decimal] = None
+    trail_money: Optional[Decimal] = None
+
+    def _groups(self):
+        return [("stop-loss", self.stop_loss_pct, self.stop_loss_abs, self.stop_loss_money),
+                ("ativacao do lucro", self.activation_pct, self.activation_abs, self.activation_money),
+                ("trailing", self.trail_pct, self.trail_abs, self.trail_money)]
 
     def validate(self) -> None:
-        pairs = [("stop-loss", self.stop_loss_pct, self.stop_loss_abs),
-                 ("ativacao do lucro", self.activation_pct, self.activation_abs),
-                 ("trailing", self.trail_pct, self.trail_abs)]
-        for name, pct, ab in pairs:
-            if (pct is None) == (ab is None):
-                raise ValueError(f"informe exatamente um valor para {name} (percentual ou absoluto)")
-            v = pct if pct is not None else ab
-            if v <= ZERO:
+        for name, pct, ab, money in self._groups():
+            given = [v for v in (pct, ab, money) if v is not None]
+            if len(given) != 1:
+                raise ValueError(f"informe exatamente um valor para {name} (percentual, no preco ou em dinheiro)")
+            if given[0] <= ZERO:
                 raise ValueError(f"{name} deve ser positivo")
         if self.stop_loss_pct is not None and self.stop_loss_pct >= 100:
             raise ValueError("stop-loss percentual deve ser menor que 100")
 
-    def stop_loss_price(self, entry: Decimal) -> Decimal:
-        if self.stop_loss_pct is not None:
-            return entry * (1 - self.stop_loss_pct / 100)
-        return entry - self.stop_loss_abs
+    def uses_money(self) -> bool:
+        return any(m is not None for _, _, _, m in self._groups())
 
-    def activation_price(self, entry: Decimal) -> Decimal:
-        if self.activation_pct is not None:
-            return entry * (1 + self.activation_pct / 100)
-        return entry + self.activation_abs
+    @staticmethod
+    def _distance(ref: Decimal, pct, ab, money, qty: Optional[Decimal]) -> Decimal:
+        if pct is not None:
+            return ref * pct / 100
+        if ab is not None:
+            return ab
+        if qty is None or qty <= ZERO:
+            raise ValueError("regra em dinheiro exige a quantidade comprada")
+        return money / qty
 
-    def trailing_stop_price(self, highest: Decimal) -> Decimal:
-        if self.trail_pct is not None:
-            return highest * (1 - self.trail_pct / 100)
-        return highest - self.trail_abs
+    def stop_loss_price(self, entry: Decimal, qty: Optional[Decimal] = None) -> Decimal:
+        return entry - self._distance(entry, self.stop_loss_pct, self.stop_loss_abs, self.stop_loss_money, qty)
+
+    def activation_price(self, entry: Decimal, qty: Optional[Decimal] = None) -> Decimal:
+        return entry + self._distance(entry, self.activation_pct, self.activation_abs, self.activation_money, qty)
+
+    def trailing_stop_price(self, highest: Decimal, qty: Optional[Decimal] = None) -> Decimal:
+        return highest - self._distance(highest, self.trail_pct, self.trail_abs, self.trail_money, qty)
 
     def describe(self) -> str:
-        def one(pct, ab):
-            return f"{dec_str(pct)}%" if pct is not None else dec_str(ab)
-        return (f"stop-loss={one(self.stop_loss_pct, self.stop_loss_abs)} "
-                f"ativacao-lucro={one(self.activation_pct, self.activation_abs)} "
-                f"trailing={one(self.trail_pct, self.trail_abs)}")
+        def one(pct, ab, money):
+            if pct is not None:
+                return f"{dec_str(pct)}%"
+            if ab is not None:
+                return f"{dec_str(ab)} no preco"
+            return f"{dec_str(money)} em dinheiro"
+        g = self._groups()
+        return (f"stop-loss={one(*g[0][1:])} ativacao-lucro={one(*g[1][1:])} trailing={one(*g[2][1:])}")
 
 
 @dataclass
@@ -483,8 +503,8 @@ class TradingBot:
         if len(quotes) > 1:
             raise ValueError(f"todos os simbolos devem usar a mesma moeda de cotacao; encontrados: {sorted(quotes)}")
         r = self.cfg.rules
-        if (r.trail_pct is not None and r.activation_pct is not None and r.trail_pct >= r.activation_pct) or \
-           (r.trail_abs is not None and r.activation_abs is not None and r.trail_abs >= r.activation_abs):
+        same_unit = [(r.trail_pct, r.activation_pct), (r.trail_abs, r.activation_abs), (r.trail_money, r.activation_money)]
+        if any(t is not None and a is not None and t >= a for t, a in same_unit):
             log.warning("ATENCAO: o recuo do trailing e maior ou igual ao lucro minimo de ativacao; "
                         "a venda pelo trailing pode ocorrer abaixo do preco de compra.")
 
@@ -550,7 +570,8 @@ class TradingBot:
         rules = self.cfg.rules
         self.position = Position(
             symbol=fill.symbol, qty=fill.qty, entry_price=fill.price, entry_quote=fill.quote, entry_time=fill.time,
-            stop_loss_price=rules.stop_loss_price(fill.price), activation_price=rules.activation_price(fill.price),
+            stop_loss_price=rules.stop_loss_price(fill.price, fill.qty),
+            activation_price=rules.activation_price(fill.price, fill.qty),
             highest=fill.price, buy_order_id=fill.order_id,
         )
         log.info("ORDEM EXECUTADA | COMPRA %s | qtd=%s | preco medio=%s | total=%s %s | taxa=%s %s | id=%s | %s",
@@ -558,7 +579,7 @@ class TradingBot:
                  dec_str(fill.commission), fill.commission_asset, fill.order_id, fmt_ts(fill.time))
         log.info("niveis: stop-loss=%s | ativacao do trailing=%s | recuo do trailing=%s",
                  dec_str(self.position.stop_loss_price), dec_str(self.position.activation_price),
-                 f"{dec_str(rules.trail_pct)}%" if rules.trail_pct is not None else dec_str(rules.trail_abs))
+                 rules.describe().split("trailing=")[1])
         if self.trades:
             self.trades.record(fill, self.phase, f"gatilho {dec_str(target.trigger)}")
         self._set_phase(Phase.HOLDING)
@@ -572,14 +593,14 @@ class TradingBot:
         if not pos.trailing_armed and price >= pos.activation_price:
             pos.trailing_armed = True
             pos.highest = price
-            pos.trailing_stop_price = self.cfg.rules.trailing_stop_price(price)
+            pos.trailing_stop_price = self.cfg.rules.trailing_stop_price(price, pos.qty)
             log.info("TRAILING ARMADO %s: preco=%s (lucro minimo atingido). Venda se recuar ate %s",
                      pos.symbol, dec_str(price), dec_str(pos.trailing_stop_price))
             self.save_state()
         if pos.trailing_armed:
             if price > pos.highest:
                 pos.highest = price
-                new_stop = self.cfg.rules.trailing_stop_price(price)
+                new_stop = self.cfg.rules.trailing_stop_price(price, pos.qty)
                 if pos.trailing_stop_price is None or new_stop > pos.trailing_stop_price:
                     pos.trailing_stop_price = new_stop
                     log.info("nova maxima %s: %s -> trailing stop em %s", pos.symbol, dec_str(price), dec_str(new_stop))
@@ -681,10 +702,10 @@ class TradingBot:
         self.cfg.rules = rules
         pos = self.position
         if pos:
-            pos.stop_loss_price = rules.stop_loss_price(pos.entry_price)
-            pos.activation_price = rules.activation_price(pos.entry_price)
+            pos.stop_loss_price = rules.stop_loss_price(pos.entry_price, pos.qty)
+            pos.activation_price = rules.activation_price(pos.entry_price, pos.qty)
             if pos.trailing_armed:
-                pos.trailing_stop_price = rules.trailing_stop_price(pos.highest)
+                pos.trailing_stop_price = rules.trailing_stop_price(pos.highest, pos.qty)
             log.info("regras atualizadas (%s): stop-loss=%s ativacao=%s trailing=%s", rules.describe(),
                      dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
                      dec_str(pos.trailing_stop_price) if pos.trailing_stop_price is not None else "nao armado")
@@ -880,18 +901,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--buy-direction", choices=["auto", "below", "above"], default="auto",
                    help="auto: compra quando o preco ATINGE o gatilho vindo de onde estiver; "
                         "below: compra quando preco <= gatilho; above: quando preco >= gatilho")
-    p.add_argument("--quote-amount", required=True, help="valor por compra na moeda de cotacao (ex.: 50 = 50 USDT)")
+    p.add_argument("--quote-amount", required=True,
+                   help="valor por compra na moeda de cotacao do par (BTCBRL -> reais; BTCUSDT -> USDT). Ex.: 50")
     p.add_argument("--next", action="append", default=[], metavar="SIMBOLO:PRECO",
                    help="moeda seguinte com gatilho de recompra; repita a opcao para varias (ex.: --next ETHUSDT:3000)")
     p.add_argument("--repeat", action="store_true",
                    help="apos vender a moeda seguinte, volta a observar a lista indefinidamente")
-    g = p.add_argument_group("regras de saida (informe pct OU abs em cada grupo)")
+    g = p.add_argument_group("regras de saida (em cada regra informe UMA unidade: pct, abs ou money)")
     g.add_argument("--stop-loss-pct", help="stop-loss em %% abaixo do preco de compra (ex.: 2)")
-    g.add_argument("--stop-loss-abs", help="stop-loss em valor absoluto abaixo do preco de compra")
+    g.add_argument("--stop-loss-abs", help="stop-loss como distancia no preco por unidade da moeda")
+    g.add_argument("--stop-loss-money", help="stop-loss em dinheiro sobre a operacao (ex.: 2 = perder no maximo R$2)")
     g.add_argument("--profit-activation-pct", help="lucro minimo em %% que arma o trailing stop (ex.: 3)")
-    g.add_argument("--profit-activation-abs", help="lucro minimo em valor absoluto que arma o trailing")
+    g.add_argument("--profit-activation-abs", help="lucro minimo como distancia no preco por unidade")
+    g.add_argument("--profit-activation-money", help="lucro minimo em dinheiro sobre a operacao (ex.: 1.5)")
     g.add_argument("--trail-pct", help="recuo em %% a partir da maxima que dispara a venda (ex.: 1)")
-    g.add_argument("--trail-abs", help="recuo em valor absoluto a partir da maxima que dispara a venda")
+    g.add_argument("--trail-abs", help="recuo como distancia no preco por unidade a partir da maxima")
+    g.add_argument("--trail-money", help="recuo em dinheiro sobre a operacao a partir da maxima (ex.: 1 = R$1)")
     o = p.add_argument_group("operacao")
     o.add_argument("--sell-on-stop", action="store_true",
                    help="ao parar (Ctrl+C), vende a mercado a posicao aberta antes de encerrar")
@@ -935,8 +960,10 @@ def opt_dec(v: Optional[str]) -> Optional[Decimal]:
 def config_from_args(args) -> BotConfig:
     rules = ExitRules(
         stop_loss_pct=opt_dec(args.stop_loss_pct), stop_loss_abs=opt_dec(args.stop_loss_abs),
+        stop_loss_money=opt_dec(args.stop_loss_money),
         activation_pct=opt_dec(args.profit_activation_pct), activation_abs=opt_dec(args.profit_activation_abs),
-        trail_pct=opt_dec(args.trail_pct), trail_abs=opt_dec(args.trail_abs),
+        activation_money=opt_dec(args.profit_activation_money),
+        trail_pct=opt_dec(args.trail_pct), trail_abs=opt_dec(args.trail_abs), trail_money=opt_dec(args.trail_money),
     )
     rules.validate()
     quote_amount = to_dec(args.quote_amount)
