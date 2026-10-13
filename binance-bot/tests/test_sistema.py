@@ -1,5 +1,6 @@
 """Testes da interface web (sistema.py) com exchange simulada e feed falso - sem rede."""
 import json
+import logging
 import sys
 import threading
 import time
@@ -31,10 +32,13 @@ def make_runner(tmp_path):
                              feed_factory=FakeFeed)
 
 
-START = {"mode": "simulate", "symbol": "btcusdt", "buy_trigger": "60000", "quote_amount": "100",
-         "stop_loss": {"type": "pct", "value": "2"}, "activation": {"type": "pct", "value": "3"},
-         "trail": {"type": "pct", "value": "1"}, "next": [{"symbol": "ETHUSDT", "trigger": "3000"}, {"symbol": "", "trigger": ""}],
-         "repeat": False, "sell_on_stop": True}
+PLAN_S = {"symbol": "s/usdt", "trigger": "0,067", "amount_brl": "50", "direction": "auto",
+          "stop": {"unit": "money", "value": "1"}, "activation": {"unit": "price", "value": "0.071"},
+          "trail": {"unit": "pct", "value": "0.8"}}
+PLAN_ETH = {"symbol": "ETHBRL", "trigger": "20000", "amount_brl": "50",
+            "stop": {"unit": "money", "value": "1"}, "activation": {"unit": "money", "value": "0.5"},
+            "trail": {"unit": "pct", "value": "0.5"}}
+START = {"mode": "simulate", "sell_on_stop": True, "plans": [PLAN_S, PLAN_ETH, {"symbol": "", "trigger": ""}]}
 
 
 def push(runner, sym, price):
@@ -52,77 +56,71 @@ def wait_for(cond, timeout=5):
 
 def test_config_from_payload_validation(tmp_path):
     cfg = sistema.config_from_payload(START, tmp_path)
-    assert cfg.first.symbol == "BTCUSDT" and len(cfg.next_targets) == 1 and cfg.rules.stop_loss_pct == D("2")
+    assert [p.symbol for p in cfg.plans] == ["SUSDT", "ETHBRL"]
+    assert cfg.plans[0].trigger == D("0.067") and cfg.plans[0].rules.stop.unit == "money"
     with pytest.raises(ValueError, match="CONFIRMO"):
         sistema.config_from_payload({**START, "mode": "live"}, tmp_path)
     with pytest.raises(ValueError, match="stop-loss"):
-        sistema.config_from_payload({**START, "stop_loss": {"type": "pct", "value": ""}}, tmp_path)
-    with pytest.raises(ValueError, match="numerico"):
-        sistema.config_from_payload({**START, "buy_trigger": "abc"}, tmp_path)
-    cfg2 = sistema.config_from_payload({**START, "quote_amount": "50,5"}, tmp_path)   # virgula decimal aceita
-    assert cfg2.quote_amount == D("50.5")
+        sistema.config_from_payload({**START, "plans": [{**PLAN_S, "stop": {"unit": "money", "value": ""}}]}, tmp_path)
+    with pytest.raises(ValueError, match="numericos"):
+        sistema.config_from_payload({**START, "plans": [{**PLAN_S, "trigger": "abc"}]}, tmp_path)
+    with pytest.raises(ValueError, match="pelo menos uma"):
+        sistema.config_from_payload({**START, "plans": []}, tmp_path)
+    with pytest.raises(ValueError, match="unidade"):
+        sistema.config_from_payload({**START, "plans": [{**PLAN_S, "trail": {"unit": "price", "value": "1"}}]}, tmp_path)
 
 
 def test_start_feed_stop_cycle(tmp_path):
     runner = make_runner(tmp_path)
     st = runner.start(START)
-    assert st["running"] and st["bot"]["phase"] == "WAITING_BUY"
+    assert st["running"] and [c["symbol"] for c in st["bot"]["coins"]] == ["SUSDT", "ETHBRL"]
+    assert st["bot"]["watched"] == ["SUSDT", "ETHBRL", "USDTBRL"]
     with pytest.raises(ValueError, match="em andamento"):
         runner.start(START)
 
-    push(runner, "BTCUSDT", "60000")
-    assert wait_for(lambda: runner.bot.phase == "HOLDING")
+    push(runner, "USDTBRL", "5.60")
+    push(runner, "SUSDT", "0.067")
+    push(runner, "ETHBRL", "20000")
+    assert wait_for(lambda: len(runner.bot.open_positions()) == 2)
 
-    # alimentar: nova lista de moedas seguintes + regras + valor
-    res = runner.feed({"next": [{"symbol": "SOLUSDT", "trigger": "150"}], "next_mode": "replace",
-                       "quote_amount": "80", "stop_loss": {"type": "pct", "value": "5"},
-                       "activation": {"type": "pct", "value": "4"}, "trail": {"type": "pct", "value": "2"}})
-    assert set(res["applied"]) == {"valor por compra", "regras de saida", "moedas seguintes"}
-    assert [t.symbol for t in runner.bot.cfg.next_targets] == ["SOLUSDT"]
-    assert runner.bot.position.stop_loss_price == D("57000")      # 5% abaixo de 60000
-    assert runner.bot.cfg.quote_amount == D("80")
+    # alimentar: atualiza ETH (recalcula niveis), inclui SOL
+    res = runner.feed({"apply": "upsert", "plans": [{**PLAN_ETH, "stop": {"unit": "money", "value": "2"}},
+                                                    {"symbol": "SOLBRL", "trigger": "900", "amount_brl": "30",
+                                                     "stop": {"unit": "pct", "value": "2"}, "activation": {"unit": "pct", "value": "1"},
+                                                     "trail": {"unit": "pct", "value": "0.5"}}]})
+    assert "ETHBRL atualizada" in res["applied"] and "SOLBRL incluida" in res["applied"]
+    pos = runner.bot.slots["ETHBRL"].position
+    assert pos.stop_loss_price == (D("20000") - D("2") / pos.qty).quantize(D("1e-12"))
+    assert runner.bot.watched_symbols() == ["SUSDT", "ETHBRL", "SOLBRL", "USDTBRL"]
 
-    res = runner.feed({"next": [{"symbol": "ETHUSDT", "trigger": "3000"}], "next_mode": "append"})
-    assert [t.symbol for t in runner.bot.cfg.next_targets] == ["SOLUSDT", "ETHUSDT"]
-
+    res = runner.feed({"remove": ["SOLBRL"]})
+    assert res["applied"] == ["SOLBRL removida"]
+    with pytest.raises(ValueError, match="posicao aberta"):
+        runner.feed({"remove": ["ETHBRL"]})
     with pytest.raises(ValueError, match="nada para alimentar"):
         runner.feed({})
 
-    # parar vendendo a posicao
-    st = runner.stop(sell_position=True)
+    # parar vendendo as posicoes
+    st = runner.stop(sell_positions=True)
     assert not st["running"]
-    assert runner.bot.position is None and runner.bot.cycles_done == 1
+    assert runner.bot.open_positions() == [] and runner.bot.sales == 2
     with pytest.raises(ValueError, match="nenhuma execucao"):
-        runner.stop(sell_position=False)
+        runner.stop(sell_positions=False)
 
 
-def test_stop_keeps_position_when_not_selling(tmp_path):
+def test_stop_keeps_positions_when_not_selling(tmp_path):
     runner = make_runner(tmp_path)
     runner.start(START)
-    push(runner, "BTCUSDT", "60000")
-    assert wait_for(lambda: runner.bot.phase == "HOLDING")
-    runner.stop(sell_position=False)
-    assert runner.bot.position is not None
+    push(runner, "ETHBRL", "20000")
+    assert wait_for(lambda: runner.bot.slots["ETHBRL"].position is not None)
+    runner.stop(sell_positions=False)
+    assert len(runner.bot.open_positions()) == 1
     assert (tmp_path / "state_simulate.json").is_file()
-
-
-def test_feed_rejects_other_quote_asset(tmp_path):
-    def real_quote_filters(symbol):
-        f = bb.SymbolFilters.default(symbol)       # ETHBTC -> cotacao BTC
-        f.step_size, f.min_notional = D("0.00001"), D("5")
-        return f
-    runner = sistema.BotRunner(tmp_path, exchange_factory=lambda cfg, payload: bb.SimulatedExchange(filters_source=real_quote_filters),
-                               feed_factory=FakeFeed)
-    runner.start(START)
-    with pytest.raises(ValueError, match="opera em USDT"):
-        runner.feed({"next": [{"symbol": "ETHBTC", "trigger": "0.05"}]})
-    runner.stop(sell_position=False)
 
 
 def test_http_api_roundtrip(tmp_path):
     runner = make_runner(tmp_path)
     memlog = sistema.MemoryLogHandler()
-    import logging
     logging.getLogger().addHandler(memlog)
     server = sistema.ThreadingHTTPServer(("127.0.0.1", 0), sistema.make_handler(runner, memlog))
     port = server.server_address[1]
@@ -143,24 +141,15 @@ def test_http_api_roundtrip(tmp_path):
 
         code, html, ctype = call("/")
         assert code == 200 and "text/html" in ctype and "Iniciar" in html and "Alimentar" in html and "Parar" in html
-        code, body, _ = call("/api/start", {**START, "symbol": ""})
-        assert code == 400 and "moeda inicial" in body["error"]
+        code, body, _ = call("/api/start", {**START, "plans": [{**PLAN_S, "symbol": ""}]})
+        assert code == 400 and "simbolo" in body["error"]
         code, body, _ = call("/api/start", START)
         assert code == 200 and body["running"]
         code, body, _ = call("/api/status")
-        assert body["bot"]["first"]["symbol"] == "BTCUSDT" and isinstance(body["log"], list)
-        code, body, _ = call("/api/stop", {"sell_position": False})
+        assert body["bot"]["coins"][0]["symbol"] == "SUSDT" and isinstance(body["log"], list)
+        code, body, _ = call("/api/stop", {"sell_positions": False})
         assert code == 200 and not body["running"]
     finally:
         server.shutdown()
         server.server_close()
         logging.getLogger().removeHandler(memlog)
-
-
-def test_payload_money_rules(tmp_path):
-    payload = {**START, "symbol": "BTCBRL", "stop_loss": {"type": "money", "value": "2"},
-               "activation": {"type": "money", "value": "1,5"}, "trail": {"type": "money", "value": "1"}}
-    cfg = sistema.config_from_payload(payload, tmp_path)
-    assert cfg.rules.stop_loss_money == D("2") and cfg.rules.activation_money == D("1.5") and cfg.rules.trail_money == D("1")
-    with pytest.raises(ValueError, match="unidade"):
-        sistema.config_from_payload({**payload, "trail": {"type": "reais", "value": "1"}}, tmp_path)

@@ -1,4 +1,4 @@
-"""Testes da logica de negociacao, sem rede e sem a biblioteca python-binance."""
+"""Testes da logica de negociacao (varias moedas em paralelo), sem rede e sem a biblioteca python-binance."""
 import sys
 from decimal import Decimal as D
 from pathlib import Path
@@ -8,24 +8,26 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import binance_bot as bb  # noqa: E402
-from binance_bot import (BotConfig, ExitRules, Fill, Phase, SimulatedExchange, SymbolFilters, Target,  # noqa: E402
+from binance_bot import (BotConfig, CoinPlan, ExitRules, Rule, SimulatedExchange, SlotPhase, SymbolFilters,  # noqa: E402
                          TradingBot, floor_to_step, dec_str, parse_order_response)
 
 
 def filters(symbol):
-    return SymbolFilters(symbol=symbol, base_asset=symbol[:-4], quote_asset="USDT",
-                         step_size=D("0.00001"), min_qty=D("0.00001"), tick_size=D("0.01"), min_notional=D("5"))
+    base, quote = bb.split_symbol(symbol)
+    return SymbolFilters(symbol=symbol, base_asset=base, quote_asset=quote, step_size=D("0.00001"),
+                         min_qty=D("0.00001"), tick_size=D("0.0001"), min_notional=D("5"))
 
 
-def rules(sl="2", act="3", trail="1"):
-    return ExitRules(stop_loss_pct=D(sl), activation_pct=D(act), trail_pct=D(trail))
+def rules(stop=("money", "1"), act=("price", "0.071"), trail=("pct", "0.8")):
+    return ExitRules(Rule(stop[0], D(stop[1])), Rule(act[0], D(act[1])), Rule(trail[0], D(trail[1])))
 
 
-def make_bot(nexts=("ETHUSDT:3000", "SOLUSDT:150"), repeat=False, fee="0", r=None, state_file=None,
-             direction="auto", symbols_log=None):
-    cfg = BotConfig(mode="simulate", first=Target.parse("BTCUSDT:60000", direction),
-                    next_targets=[Target.parse(n, direction) for n in nexts], quote_amount=D("100"),
-                    rules=r or rules(), repeat=repeat, state_file=state_file)
+def plan(symbol="SUSDT", trigger="0.067", amount="50", r=None, direction="auto"):
+    return CoinPlan(symbol=symbol, trigger=D(trigger), amount_brl=D(amount), rules=r or rules(), direction=direction)
+
+
+def make_bot(plans=None, fee="0", state_file=None, symbols_log=None, mode="simulate"):
+    cfg = BotConfig(mode=mode, plans=plans or [plan()], state_file=state_file)
     ex = SimulatedExchange(fee_pct=D(fee), filters_source=filters)
     bot = TradingBot(cfg, ex, on_symbols_changed=(symbols_log.append if symbols_log is not None else None))
     bot.prepare()
@@ -38,207 +40,230 @@ def test_floor_to_step_and_dec_str():
     assert dec_str(floor_to_step(D("0.0016789"), D("0.00001"))) == "0.00167"
     assert dec_str(D("1E-7")) == "0.0000001"
     assert dec_str(D("100.000")) == "100"
+    assert bb.normalize_symbol("s/usdt ") == "SUSDT"
+    assert bb.to_dec("0,071") == D("0.071")
 
 
-def test_target_parse_and_auto_direction():
-    t = Target.parse("ethusdt: 3000")
-    assert t.symbol == "ETHUSDT" and t.trigger == D("3000")
-    assert t.check(D("3100")) is False and t.resolved == "below"   # preco acima -> compra quando cair ate o gatilho
-    assert t.check(D("3000")) is True
-    t2 = Target.parse("ETHUSDT:3000")
-    assert t2.check(D("2900")) is False and t2.resolved == "above"  # preco abaixo -> compra quando subir ate o gatilho
-    assert t2.check(D("3000.5")) is True
-    t3 = Target.parse("ETHUSDT:3000")
-    assert t3.check(D("3000")) is True                              # ja no gatilho -> compra imediata
-    with pytest.raises(ValueError):
-        Target.parse("ETHUSDT")
+def test_plan_parse_cli():
+    p = CoinPlan.parse("s/usdt trigger=0,067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8")
+    assert p.symbol == "SUSDT" and p.trigger == D("0.067") and p.amount_brl == D("50")
+    assert p.rules.stop.unit == "money" and p.rules.activation.unit == "price" and p.rules.trail.value == D("0.8")
+    with pytest.raises(ValueError, match="faltam"):
+        CoinPlan.parse("SUSDT trigger=0.067")
+    with pytest.raises(ValueError, match="unidade"):
+        CoinPlan.parse("SUSDT trigger=0.067 amount=50 stop=reais:1 activation=price:0.071 trail=pct:0.8")
+    with pytest.raises(ValueError, match="trailing"):
+        CoinPlan.parse("SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=price:0.07")
 
 
-def test_explicit_direction():
-    t = Target.parse("ETHUSDT:3000", "below")
-    assert t.check(D("2900")) is True   # explicito: abaixo do gatilho compra de imediato
+def test_config_rejects_duplicate_symbol():
+    with pytest.raises(ValueError, match="repetido"):
+        BotConfig(mode="simulate", plans=[plan(), plan()]).validate()
 
 
-def test_rules_validation():
-    with pytest.raises(ValueError):
-        ExitRules(stop_loss_pct=D("2"), stop_loss_abs=D("10"), activation_pct=D("3"), trail_pct=D("1")).validate()
-    with pytest.raises(ValueError):
-        ExitRules(stop_loss_pct=D("2"), activation_pct=D("3")).validate()
-    r = ExitRules(stop_loss_abs=D("500"), activation_abs=D("1000"), trail_abs=D("300"))
-    r.validate()
-    assert r.stop_loss_price(D("60000")) == D("59500")
-    assert r.activation_price(D("60000")) == D("61000")
-    assert r.trailing_stop_price(D("62000")) == D("61700")
-
-
-# ----------------------------------------------------------------------------- fluxo principal
-def test_buy_on_trigger_then_stop_loss():
+# ----------------------------------------------------------------------------- conversao de reais e niveis
+def test_brl_amount_converted_by_usdt_rate_and_money_levels():
     bot = make_bot()
-    bot.handle_price("BTCUSDT", D("61000"))
-    assert bot.phase == Phase.WAITING_BUY
-    bot.handle_price("BTCUSDT", D("60000"))
-    assert bot.phase == Phase.HOLDING
-    pos = bot.position
-    assert pos.entry_price == D("60000")
-    assert pos.stop_loss_price == D("58800")
-    assert pos.activation_price == D("61800")
-    bot.handle_price("BTCUSDT", D("59000"))       # acima do stop: mantem
-    assert bot.phase == Phase.HOLDING
-    bot.handle_price("BTCUSDT", D("58800"))       # toca o stop-loss: vende
-    assert bot.phase == Phase.WATCHING_NEXT
-    assert bot.position is None
-    assert bot.realized_pnl < 0
+    bot.handle_price("USDTBRL", D("5.60"))          # cotacao chega pelo stream
+    bot.handle_price("SUSDT", D("0.0690"))          # acima do gatilho: espera cair
+    assert bot.slots["SUSDT"].phase == SlotPhase.WAITING
+    bot.handle_price("SUSDT", D("0.0670"))          # gatilho
+    pos = bot.slots["SUSDT"].position
+    assert pos is not None
+    quote_spent = D("50") / D("5.60")               # R$50 em USDT
+    assert abs(pos.entry_quote - quote_spent) < D("0.0001")
+    assert abs(pos.entry_brl - D("50")) < D("0.001")
+    # stop em R$1: distancia = (1 / 5.60) / qty
+    expected_stop = pos.entry_price - (D("1") / D("5.60")) / pos.qty
+    assert abs(pos.stop_loss_price - expected_stop) < D("1e-12")
+    assert pos.activation_price == D("0.071")       # minimo em preco
 
 
-def test_trailing_stop_sells_on_reversal_not_on_first_target():
+def test_buy_waits_for_rate_when_missing():
     bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"))
-    assert bot.phase == Phase.HOLDING
-    bot.handle_price("BTCUSDT", D("61800"))       # lucro minimo (3%) -> arma trailing, nao vende
-    assert bot.phase == Phase.HOLDING and bot.position.trailing_armed
-    assert bot.position.trailing_stop_price == D("61800") * D("0.99")
-    bot.handle_price("BTCUSDT", D("63000"))       # nova maxima: trailing sobe
-    assert bot.position.trailing_stop_price == D("63000") * D("0.99")
-    bot.handle_price("BTCUSDT", D("62500"))       # recuo < 1%: mantem
-    assert bot.phase == Phase.HOLDING
-    bot.handle_price("BTCUSDT", D("62370"))       # recuo de 1% da maxima: vende
-    assert bot.phase == Phase.WATCHING_NEXT
-    assert bot.realized_pnl > 0
+    bot.handle_price("SUSDT", D("0.0670"), now=0)   # sem USDTBRL ainda
+    assert bot.slots["SUSDT"].position is None
+    bot.handle_price("USDTBRL", D("5.60"), now=5)
+    bot.handle_price("SUSDT", D("0.0670"), now=5)
+    assert bot.slots["SUSDT"].position is not None
 
 
-def test_trailing_stop_never_moves_down():
+def test_trailing_floor_never_sells_below_minimum():
+    """Minimo 0,071 e recuo de 0,8%: a 0,0712 o recuo daria 0,07063 (< minimo) -> vende no minimo 0,071."""
     bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("63000"))
-    stop = bot.position.trailing_stop_price
-    bot.handle_price("BTCUSDT", D("62800"))
-    assert bot.position.trailing_stop_price == stop and bot.position.highest == D("63000")
+    bot.handle_price("USDTBRL", D("5.60"))
+    bot.handle_price("SUSDT", D("0.0670"))
+    pos = bot.slots["SUSDT"].position
+    bot.handle_price("SUSDT", D("0.0710"))          # atinge o minimo -> arma
+    assert pos.trailing_armed and pos.trailing_stop_price == D("0.071")
+    bot.handle_price("SUSDT", D("0.0712"))          # maxima; 0,8% abaixo = 0,0706304 < minimo -> piso 0,071
+    assert pos.trailing_stop_price == D("0.071")
+    bot.handle_price("SUSDT", D("0.07105"))         # recuo de 0,07%: ainda acima do minimo, mantem
+    assert bot.slots["SUSDT"].phase == SlotPhase.HOLDING
+    bot.handle_price("SUSDT", D("0.0710"))          # tocou o minimo -> vende
+    assert bot.slots["SUSDT"].phase == SlotPhase.WAITING
+    assert bot.sales == 1 and bot.realized_brl > 0
 
 
-def test_stop_loss_wins_when_hit_first():
+def test_trailing_above_floor_uses_percentage():
     bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("57000"))       # gap abaixo do stop: vende por STOP_LOSS
-    assert bot.phase == Phase.WATCHING_NEXT
+    bot.handle_price("USDTBRL", D("5.60"))
+    bot.handle_price("SUSDT", D("0.0670"))
+    pos = bot.slots["SUSDT"].position
+    bot.handle_price("SUSDT", D("0.0800"))          # bem acima do minimo: 0,8% abaixo = 0,07936 > 0,071
+    assert pos.trailing_stop_price == D("0.0800") * (1 - D("0.008"))
+    bot.handle_price("SUSDT", D("0.0795"))          # recuo < 0,8%: mantem
+    assert bot.slots["SUSDT"].phase == SlotPhase.HOLDING
+    bot.handle_price("SUSDT", D("0.07930"))         # recuo > 0,8%: vende acima do minimo
+    assert bot.slots["SUSDT"].phase == SlotPhase.WAITING
 
 
-def test_next_list_buys_first_to_hit_and_ignores_others():
+def test_stop_loss_in_reais():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    pos = bot.slots["ETHBRL"].position
+    assert pos.rate == D("1") and pos.entry_brl == D("50")
+    qty = pos.qty
+    assert pos.stop_loss_price == D("20000") - D("1") / qty      # perder no maximo R$1
+    assert pos.activation_price == D("20000") + D("0.5") / qty   # lucro minimo R$0,50
+    bot.handle_price("ETHBRL", pos.stop_loss_price)
+    assert bot.slots["ETHBRL"].phase == SlotPhase.WAITING
+    assert abs(bot.realized_brl - D("-1")) < D("0.0001")
+
+
+def test_activation_profit_in_reais_and_pct_stop():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("pct", "2"), ("money", "2"), ("pct", "1")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    pos = bot.slots["ETHBRL"].position
+    assert pos.stop_loss_price == D("19600")
+    bot.handle_price("ETHBRL", pos.activation_price)             # lucro de R$2 -> arma
+    assert pos.trailing_armed
+    assert pos.qty * (pos.activation_price - pos.entry_price) == D("2")
+
+
+# ----------------------------------------------------------------------------- varias moedas em paralelo
+def test_parallel_positions_and_requeue_after_sale():
     log_syms = []
-    bot = make_bot(symbols_log=log_syms)
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("50000"))       # stop-loss
-    assert bot.phase == Phase.WATCHING_NEXT
-    assert log_syms[-1] == ["ETHUSDT", "SOLUSDT"]
-    bot.handle_price("ETHUSDT", D("3200"))        # acima do gatilho: espera cair
-    bot.handle_price("SOLUSDT", D("140"))         # abaixo do gatilho: espera subir
-    assert bot.phase == Phase.WATCHING_NEXT
-    bot.handle_price("SOLUSDT", D("150"))         # SOL atinge primeiro
-    assert bot.phase == Phase.HOLDING and bot.position.symbol == "SOLUSDT"
-    assert log_syms[-1] == ["SOLUSDT"]
-    bot.handle_price("ETHUSDT", D("2000"))        # ETH ignorada enquanto em posicao
-    assert bot.position.symbol == "SOLUSDT"
-    bot.handle_price("SOLUSDT", D("160"))         # arma trailing (3% = 154.5)
-    bot.handle_price("SOLUSDT", D("158"))         # recuo de 1.25%: vende
-    assert bot.phase == Phase.FINISHED            # ciclo completo sem --repeat
-    assert bot.cycles_done == 2
+    bot = make_bot(plans=[plan(), plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))],
+                   symbols_log=log_syms)
+    assert log_syms[-1] == ["SUSDT", "ETHBRL", "USDTBRL"]     # moedas + par de cotacao
+    bot.handle_price("USDTBRL", D("5.60"))
+    bot.handle_price("SUSDT", D("0.0670"))
+    bot.handle_price("ETHBRL", D("20000"))
+    assert len(bot.open_positions()) == 2                       # duas posicoes ao mesmo tempo
+    bot.handle_price("ETHBRL", D("20300"))                      # ETH arma e sobe
+    bot.handle_price("ETHBRL", D("20150"))                      # recuo 0,74% > 0,5%: vende ETH
+    assert bot.slots["ETHBRL"].phase == SlotPhase.WAITING and bot.slots["SUSDT"].phase == SlotPhase.HOLDING
+    # ETH volta a esperar o gatilho: preco acima do gatilho -> compra quando cair ate 20000 de novo
+    bot.handle_price("ETHBRL", D("20100"))
+    assert bot.slots["ETHBRL"].resolved == "below" and bot.slots["ETHBRL"].position is None
+    bot.handle_price("ETHBRL", D("20000"))
+    assert bot.slots["ETHBRL"].position is not None             # recomprou
+    assert bot.sales == 1
 
 
-def test_repeat_keeps_watching_list():
-    bot = make_bot(repeat=True)
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("50000"))
-    bot.handle_price("ETHUSDT", D("3000"))
-    bot.handle_price("ETHUSDT", D("2000"))
-    assert bot.phase == Phase.WATCHING_NEXT
-    # direcoes sao reavaliadas a cada nova fase de observacao
-    assert all(t.resolved is None for t in bot.cfg.next_targets)
+def test_requeue_after_stop_loss_buys_when_price_climbs_back():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    bot.handle_price("ETHBRL", D("19000"))                      # stop-loss, preco abaixo do gatilho
+    assert bot.slots["ETHBRL"].position is None
+    bot.handle_price("ETHBRL", D("19500"))                      # resolve: compra quando subir ate 20000
+    assert bot.slots["ETHBRL"].resolved == "above"
+    bot.handle_price("ETHBRL", D("20000"))
+    assert bot.slots["ETHBRL"].position is not None
 
 
-def test_no_next_list_finishes_after_first_sale():
-    bot = make_bot(nexts=())
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("50000"))
-    assert bot.phase == Phase.FINISHED
-
-
-def test_fee_reduces_quantity_and_pnl():
-    bot = make_bot(fee="0.1")
-    bot.handle_price("BTCUSDT", D("60000"))
-    pos = bot.position
-    gross = floor_to_step(D("100") / D("60000"), D("0.00001"))
-    assert pos.qty == gross - gross * D("0.001")
-    bot.handle_price("BTCUSDT", D("61800"))
-    bot.handle_price("BTCUSDT", D("61000"))       # recuo de ~1.3%
-    assert bot.phase == Phase.WATCHING_NEXT
-    # vendido acima da entrada, mas as taxas reduzem o lucro
-    assert D("0") < bot.realized_pnl < D("100") * D("0.0167")
+def test_update_plans_upsert_replace_remove():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    changed = bot.update_plans([plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "2"), ("money", "1"), ("pct", "0.5"))),
+                                plan(symbol="SOLBRL", trigger="900", r=rules(("money", "1"), ("money", "1"), ("pct", "1")))])
+    assert "ETHBRL atualizada" in changed and "SOLBRL incluida" in changed
+    pos = bot.slots["ETHBRL"].position
+    assert pos.stop_loss_price == (D("20000") - D("2") / pos.qty).quantize(D("1e-12"))   # niveis recalculados na posicao aberta
+    with pytest.raises(ValueError, match="posicao aberta"):
+        bot.remove_plans(["ETHBRL"])
+    assert bot.remove_plans(["SOLBRL"]) == ["SOLBRL"]
+    bot.update_plans([plan(symbol="BTCBRL", trigger="500000")], mode="replace")
+    assert "ETHBRL" in bot.slots and "BTCBRL" in bot.slots      # ETH com posicao nao e removida
+    assert [p.symbol for p in bot.cfg.plans] == ["ETHBRL", "BTCBRL"]
 
 
 def test_sell_failure_retries_and_keeps_position(monkeypatch):
-    bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"), now=0)
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"), now=0)
     calls = {"n": 0}
 
     def failing_sell(f, qty):
         calls["n"] += 1
         raise bb.OrderError("rede caiu")
     monkeypatch.setattr(bot.ex, "market_sell", failing_sell)
-    bot.handle_price("BTCUSDT", D("50000"), now=100)
-    assert bot.phase == Phase.HOLDING and calls["n"] == 1
-    bot.handle_price("BTCUSDT", D("50000"), now=105)   # dentro do intervalo de espera: nao tenta
+    bot.handle_price("ETHBRL", D("19000"), now=100)
+    assert bot.slots["ETHBRL"].phase == SlotPhase.HOLDING and calls["n"] == 1
+    bot.handle_price("ETHBRL", D("19000"), now=105)
     assert calls["n"] == 1
-    bot.handle_price("BTCUSDT", D("50000"), now=111)   # tenta de novo
+    bot.handle_price("ETHBRL", D("19000"), now=111)
     assert calls["n"] == 2
     monkeypatch.undo()
-    bot.handle_price("BTCUSDT", D("50000"), now=130)
-    assert bot.phase == Phase.WATCHING_NEXT
+    bot.handle_price("ETHBRL", D("19000"), now=130)
+    assert bot.slots["ETHBRL"].phase == SlotPhase.WAITING
 
 
-def test_buy_failures_stop_bot(monkeypatch):
-    bot = make_bot()
+def test_buy_failures_disable_only_that_coin(monkeypatch):
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5"))),
+                          plan(symbol="SOLBRL", trigger="900", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
 
     def failing_buy(f, q):
         raise bb.OrderError("saldo insuficiente")
     monkeypatch.setattr(bot.ex, "market_buy_quote", failing_buy)
     for t in (0, 20, 40):
-        bot.handle_price("BTCUSDT", D("60000"), now=t)
-    assert bot.phase == Phase.ERROR
+        bot.handle_price("ETHBRL", D("20000"), now=t)
+    assert bot.slots["ETHBRL"].phase == SlotPhase.ERROR and bot.phase == "RUNNING"
+    monkeypatch.undo()
+    bot.handle_price("SOLBRL", D("900"), now=50)
+    assert bot.slots["SOLBRL"].position is not None
 
 
-def test_min_notional_validation():
-    cfg = BotConfig(mode="simulate", first=Target.parse("BTCUSDT:60000"), next_targets=[],
-                    quote_amount=D("3"), rules=rules())
-    bot = TradingBot(cfg, SimulatedExchange(filters_source=filters))
-    with pytest.raises(ValueError, match="abaixo do minimo"):
-        bot.prepare()
+def test_min_notional_validation_on_buy():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", amount="3", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"), now=0)
+    assert bot.slots["ETHBRL"].position is None and bot.slots["ETHBRL"].buy_failures == 1
 
 
 def test_state_save_and_resume(tmp_path):
     state = tmp_path / "state.json"
-    bot = make_bot(state_file=state)
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.handle_price("BTCUSDT", D("63000"))
+    p = plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))
+    bot = make_bot(plans=[p], state_file=state)
+    bot.handle_price("ETHBRL", D("20000"))
+    bot.handle_price("ETHBRL", D("20300"))
     assert state.is_file()
-    bot2 = make_bot(state_file=state)
-    assert bot2.resume() is True
-    assert bot2.phase == Phase.HOLDING
-    assert bot2.position.trailing_armed and bot2.position.highest == D("63000")
-    bot2.handle_price("BTCUSDT", D("62000"))      # abaixo do trailing stop salvo: vende
-    assert bot2.phase == Phase.WATCHING_NEXT
+    bot2 = make_bot(plans=[plan(symbol="SOLBRL", trigger="900")], state_file=state)   # plano novo sem ETH
+    assert bot2.resume() == 1
+    assert "ETHBRL" in bot2.slots and bot2.slots["ETHBRL"].position.trailing_armed
+    bot2.handle_price("ETHBRL", D("20100"))      # abaixo do trailing salvo: vende
+    assert bot2.slots["ETHBRL"].phase == SlotPhase.WAITING
 
 
-def test_shutdown_sell_on_stop():
+def test_shutdown_sells_all_or_keeps():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5"))),
+                          plan(symbol="SOLBRL", trigger="900", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    bot.handle_price("SOLBRL", D("900"))
+    bot.shutdown(sell_positions=False)
+    assert len(bot.open_positions()) == 2
+    bot.shutdown(sell_positions=True)
+    assert len(bot.open_positions()) == 0 and bot.sales == 2
+
+
+def test_snapshot_contains_coins_and_brl_values():
     bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.shutdown(sell_position=True)
-    assert bot.position is None and bot.cycles_done == 1
-
-
-def test_shutdown_keeps_position_without_flag():
-    bot = make_bot()
-    bot.handle_price("BTCUSDT", D("60000"))
-    bot.shutdown(sell_position=False)
-    assert bot.position is not None
+    bot.handle_price("USDTBRL", D("5.60"))
+    bot.handle_price("SUSDT", D("0.0670"))
+    snap = bot.snapshot()
+    coin = snap["coins"][0]
+    assert coin["symbol"] == "SUSDT" and coin["phase"] == "HOLDING" and coin["rate"] == "5.6"
+    assert coin["position"]["value_brl"] == "50"
+    assert snap["watched"] == ["SUSDT", "USDTBRL"]
 
 
 # ----------------------------------------------------------------------------- parse da resposta real
@@ -266,16 +291,19 @@ def test_parse_order_response_not_filled():
         parse_order_response({"status": "EXPIRED", "executedQty": "0", "cummulativeQuoteQty": "0"}, filters("BTCUSDT"), "BUY")
 
 
-def test_cli_config_parsing():
-    args = bb.build_parser().parse_args(["--symbol", "btcusdt", "--buy-trigger", "60000", "--quote-amount", "50",
-                                         "--stop-loss-pct", "2", "--profit-activation-pct", "3", "--trail-pct", "1",
-                                         "--next", "ETHUSDT:3000", "--next", "SOLUSDT:150"])
+def test_cli_config_parsing(tmp_path):
+    args = bb.build_parser().parse_args(["--plan", "SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8",
+                                         "--plan", "ETHBRL trigger=20000 amount=50 stop=money:1 activation=money:2 trail=pct:0.8",
+                                         "--data-dir", str(tmp_path)])
     cfg = bb.config_from_args(args)
-    assert cfg.first.symbol == "BTCUSDT" and len(cfg.next_targets) == 2 and cfg.mode == "simulate"
-    bad = bb.build_parser().parse_args(["--symbol", "BTCUSDT", "--buy-trigger", "60000", "--quote-amount", "50",
-                                        "--stop-loss-pct", "2", "--profit-activation-pct", "3"])
-    with pytest.raises(ValueError):
-        bb.config_from_args(bad)
+    assert [p.symbol for p in cfg.plans] == ["SUSDT", "ETHBRL"] and cfg.sell_on_stop
+    cfg_json = tmp_path / "p.json"
+    cfg_json.write_text('{"plans": [' + __import__("json").dumps(cfg.plans[0].to_dict()) + ']}', encoding="utf-8")
+    args2 = bb.build_parser().parse_args(["--config", str(cfg_json), "--no-sell-on-stop", "--data-dir", str(tmp_path)])
+    cfg2 = bb.config_from_args(args2)
+    assert cfg2.plans[0].symbol == "SUSDT" and not cfg2.sell_on_stop
+    with pytest.raises(ValueError, match="pelo menos uma"):
+        bb.config_from_args(bb.build_parser().parse_args(["--data-dir", str(tmp_path)]))
 
 
 # ----------------------------------------------------------------------------- feed e loop principal
@@ -305,57 +333,14 @@ def test_run_live_loop_with_fake_feed():
         def stop(self): pass
 
     feed = FakeFeed()
-    bot = make_bot(nexts=(), symbols_log=None)
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
     bot.on_symbols_changed = feed.set_symbols
-    for p in ("61000", "60000", "61800", "63000", "62000"):
-        q.put(("price", "BTCUSDT", D(p), 0.0))
-    q.put(("price", "ETHUSDT", D("1"), 0.0))      # simbolo nao observado: ignorado
+    for p in ("20100", "20000", "20300", "20150"):
+        q.put(("price", "ETHBRL", D(p), 0.0))
+    q.put(("price", "XRPBRL", D("1"), 0.0))      # simbolo nao observado: ignorado
+    stop = threading.Event()
+    q.put(("command", lambda b: stop.set()))      # comando processado na thread do loop encerra o teste
     args = types.SimpleNamespace(watchdog_seconds=3600, status_seconds=3600)
-    bb.run_live_loop(bot, feed, q, args, threading.Event())
-    assert bot.phase == Phase.FINISHED
-    assert subscribed[0] == ["BTCUSDT"] and subscribed[-1] == [] and "restart" not in subscribed
-
-
-# ----------------------------------------------------------------------------- regras em dinheiro (R$ na operacao)
-def test_money_rules_convert_to_price_by_quantity():
-    r = ExitRules(stop_loss_money=D("2"), activation_money=D("1.5"), trail_money=D("1"))
-    r.validate()
-    qty = D("0.0001")  # R$50 de BTC a R$500000
-    assert r.stop_loss_price(D("500000"), qty) == D("480000")      # perder no maximo R$2
-    assert r.activation_price(D("500000"), qty) == D("515000")     # lucro minimo de R$1,50
-    assert r.trailing_stop_price(D("520000"), qty) == D("510000")  # recuo de R$1 a partir da maxima
-    with pytest.raises(ValueError):
-        r.stop_loss_price(D("500000"))                              # sem quantidade nao da para converter
-    with pytest.raises(ValueError):
-        ExitRules(stop_loss_money=D("2"), stop_loss_pct=D("1"), activation_pct=D("3"), trail_pct=D("1")).validate()
-
-
-def test_money_rules_full_cycle_in_brl():
-    def brl_filters(symbol):
-        return SymbolFilters(symbol=symbol, base_asset=symbol[:-3], quote_asset="BRL",
-                             step_size=D("0.00000001"), min_qty=D("0.00000001"), tick_size=D("1"), min_notional=D("10"))
-    cfg = BotConfig(mode="simulate", first=Target.parse("BTCBRL:500000"), next_targets=[], quote_amount=D("50"),
-                    rules=ExitRules(stop_loss_money=D("2"), activation_money=D("1.5"), trail_money=D("1")))
-    bot = TradingBot(cfg, SimulatedExchange(fee_pct=D("0"), filters_source=brl_filters))
-    bot.prepare()
-    bot.handle_price("BTCBRL", D("500000"))
-    pos = bot.position
-    assert pos.qty == D("0.0001")
-    assert pos.stop_loss_price == D("480000") and pos.activation_price == D("515000")
-    bot.handle_price("BTCBRL", D("515000"))       # lucro de R$1,50 -> arma
-    assert pos.trailing_armed and pos.trailing_stop_price == D("505000")
-    bot.handle_price("BTCBRL", D("530000"))       # maxima: posicao vale R$53 -> vende se cair a R$52
-    assert pos.trailing_stop_price == D("520000")
-    bot.handle_price("BTCBRL", D("521000"))
-    assert bot.phase == Phase.HOLDING
-    bot.handle_price("BTCBRL", D("520000"))       # recuou R$1 -> vende com ~R$2 de lucro
-    assert bot.phase == Phase.FINISHED
-    assert bot.realized_pnl == D("2")
-
-
-def test_cli_money_rules():
-    args = bb.build_parser().parse_args(["--symbol", "BTCBRL", "--buy-trigger", "500000", "--quote-amount", "50",
-                                         "--stop-loss-money", "2", "--profit-activation-money", "1.5", "--trail-money", "1"])
-    cfg = bb.config_from_args(args)
-    assert cfg.rules.trail_money == D("1") and cfg.rules.uses_money()
-    assert "em dinheiro" in cfg.rules.describe()
+    bb.run_live_loop(bot, feed, q, args, stop)
+    assert bot.sales == 1 and bot.slots["ETHBRL"].phase == SlotPhase.WAITING
+    assert subscribed[0] == ["ETHBRL"] and "restart" not in subscribed

@@ -18,10 +18,8 @@ import queue
 import signal
 import sys
 import threading
-import time
 import types
 from datetime import datetime, timezone
-from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -47,61 +45,46 @@ class MemoryLogHandler(logging.Handler):
 
 
 # --------------------------------------------------------------------------- montagem de parametros
-def _dec(payload: dict, key: str, label: str, required: bool = True) -> Optional[Decimal]:
-    raw = payload.get(key)
-    if raw in (None, ""):
-        if required:
-            raise ValueError(f"informe o campo '{label}'")
-        return None
-    try:
-        v = bb.to_dec(str(raw).replace(",", "."))
-    except ValueError:
-        raise ValueError(f"campo '{label}' deve ser numerico (recebido: {raw!r})")
-    return v
-
-
-def _rule(payload: dict, key: str, label: str, required: bool = True):
-    """Le {"type": "pct"|"abs"|"money", "value": "..."} e devolve (pct, abs, money)."""
-    item = payload.get(key) or {}
+def _rule(item, label: str) -> bb.Rule:
     if not isinstance(item, dict):
         raise ValueError(f"campo '{label}' em formato invalido")
-    value = _dec(item, "value", label, required=required)
-    if value is None:
-        return None, None, None
-    kind = (item.get("type") or "pct").lower()
-    if kind not in ("pct", "abs", "money"):
-        raise ValueError(f"campo '{label}': unidade deve ser 'pct', 'abs' ou 'money'")
-    return {"pct": (value, None, None), "abs": (None, value, None), "money": (None, None, value)}[kind]
+    raw = item.get("value")
+    if raw in (None, ""):
+        raise ValueError(f"informe o campo '{label}'")
+    try:
+        value = bb.to_dec(raw)
+    except ValueError:
+        raise ValueError(f"campo '{label}' deve ser numerico (recebido: {raw!r})")
+    return bb.Rule(str(item.get("unit") or "pct").lower(), value)
 
 
-def rules_from_payload(payload: dict, required: bool = True) -> Optional[bb.ExitRules]:
-    sl = _rule(payload, "stop_loss", "stop-loss", required)
-    act = _rule(payload, "activation", "lucro minimo para armar o trailing", required)
-    tr = _rule(payload, "trail", "recuo do trailing", required)
-    if not required and all(v is None for group in (sl, act, tr) for v in group):
-        return None
-    rules = bb.ExitRules(stop_loss_pct=sl[0], stop_loss_abs=sl[1], stop_loss_money=sl[2],
-                         activation_pct=act[0], activation_abs=act[1], activation_money=act[2],
-                         trail_pct=tr[0], trail_abs=tr[1], trail_money=tr[2])
-    rules.validate()
-    return rules
+def plan_from_payload(item: dict, i: int) -> bb.CoinPlan:
+    if not isinstance(item, dict):
+        raise ValueError(f"moeda #{i} em formato invalido")
+    sym = bb.normalize_symbol(item.get("symbol", ""))
+    if not sym:
+        raise ValueError(f"moeda #{i}: informe o simbolo (ex.: BTCBRL)")
+    try:
+        trigger = bb.to_dec(item.get("trigger"))
+        amount = bb.to_dec(item.get("amount_brl"))
+    except ValueError as exc:
+        raise ValueError(f"{sym}: gatilho e valor por compra devem ser numericos ({exc})")
+    plan = bb.CoinPlan(symbol=sym, trigger=trigger, amount_brl=amount,
+                       rules=bb.ExitRules(_rule(item.get("stop"), f"{sym}: stop-loss"),
+                                          _rule(item.get("activation"), f"{sym}: minimo para venda na alta"),
+                                          _rule(item.get("trail"), f"{sym}: recuo do trailing")),
+                       direction=str(item.get("direction") or "auto").lower())
+    plan.validate()
+    return plan
 
 
-def targets_from_payload(items, direction: str = "auto") -> List[bb.Target]:
-    out = []
+def plans_from_payload(items) -> List[bb.CoinPlan]:
+    plans = []
     for i, item in enumerate(items or [], 1):
-        if not isinstance(item, dict):
-            raise ValueError(f"moeda seguinte #{i} em formato invalido")
-        sym = str(item.get("symbol", "")).strip().upper()
-        if not sym and item.get("trigger") in (None, ""):
+        if isinstance(item, dict) and not str(item.get("symbol", "")).strip() and item.get("trigger") in (None, ""):
             continue  # linha vazia do formulario
-        if not sym:
-            raise ValueError(f"moeda seguinte #{i}: informe o simbolo")
-        trig = _dec(item, "trigger", f"gatilho de {sym}")
-        if trig <= 0:
-            raise ValueError(f"gatilho de {sym} deve ser positivo")
-        out.append(bb.Target(symbol=sym, trigger=trig, direction=direction))
-    return out
+        plans.append(plan_from_payload(item, i))
+    return plans
 
 
 def config_from_payload(payload: dict, data_dir: Path) -> bb.BotConfig:
@@ -110,27 +93,12 @@ def config_from_payload(payload: dict, data_dir: Path) -> bb.BotConfig:
         raise ValueError("modo deve ser simulate, testnet ou live")
     if mode == "live" and str(payload.get("confirm", "")).strip() != "CONFIRMO":
         raise ValueError("modo live exige digitar CONFIRMO no campo de confirmacao")
-    symbol = str(payload.get("symbol", "")).strip().upper()
-    if not symbol:
-        raise ValueError("informe a moeda inicial (ex.: BTCUSDT)")
-    direction = str(payload.get("buy_direction") or "auto").lower()
-    if direction not in ("auto", "below", "above"):
-        raise ValueError("direcao do gatilho deve ser auto, below ou above")
-    trigger = _dec(payload, "buy_trigger", "preco de gatilho da compra")
-    if trigger <= 0:
-        raise ValueError("preco de gatilho deve ser positivo")
-    quote_amount = _dec(payload, "quote_amount", "valor por compra")
-    if quote_amount <= 0:
-        raise ValueError("valor por compra deve ser positivo")
-    rules = rules_from_payload(payload, required=True)
-    nexts = targets_from_payload(payload.get("next"), direction)
+    plans = plans_from_payload(payload.get("plans"))
     retry = int(payload.get("order_retry_seconds") or 10)
-    return bb.BotConfig(
-        mode=mode, first=bb.Target(symbol=symbol, trigger=trigger, direction=direction), next_targets=nexts,
-        quote_amount=quote_amount, rules=rules, repeat=bool(payload.get("repeat")),
-        sell_on_stop=bool(payload.get("sell_on_stop")), order_retry_seconds=max(1, retry),
-        state_file=data_dir / f"state_{mode}.json",
-    )
+    cfg = bb.BotConfig(mode=mode, plans=plans, sell_on_stop=bool(payload.get("sell_on_stop", True)),
+                       order_retry_seconds=max(1, retry), state_file=data_dir / f"state_{mode}.json")
+    cfg.validate()
+    return cfg
 
 
 # --------------------------------------------------------------------------- execucao do bot em thread
@@ -150,7 +118,7 @@ class BotRunner:
         self.cfg: Optional[bb.BotConfig] = None
         self.started_at: Optional[datetime] = None
         self.finished_at: Optional[datetime] = None
-        self.sell_on_stop = False
+        self.sell_on_stop = True
         self.last_error: Optional[str] = None
         self.watchdog_seconds = 90
 
@@ -187,7 +155,7 @@ class BotRunner:
             self._thread = threading.Thread(target=self._run, args=(bot, feed, trade_log, self._stop_event),
                                             name="bot-loop", daemon=True)
             self._thread.start()
-            log.info("execucao iniciada pela pagina Sistema (modo %s)", cfg.mode)
+            log.info("execucao iniciada pela pagina Sistema (modo %s, %d moeda(s))", cfg.mode, len(cfg.plans))
             return self.status()
 
     def _run(self, bot: bb.TradingBot, feed, trade_log: bb.TradeLog, stop_event: threading.Event) -> None:
@@ -201,55 +169,55 @@ class BotRunner:
             try:
                 feed.stop()
             finally:
-                bot.shutdown(sell_position=self.sell_on_stop and stop_event.is_set())
+                bot.shutdown(sell_positions=self.sell_on_stop and stop_event.is_set())
                 trade_log.close()
                 self.finished_at = datetime.now(timezone.utc)
-                log.info("execucao encerrada | fase=%s | PnL=%s", bot.phase, bb.dec_str(bot.realized_pnl))
+                log.info("execucao encerrada | acumulado=%s | posicoes abertas=%d", bb.brl_str(bot.realized_brl),
+                         len(bot.open_positions()))
+
+    def _command(self, fn: Callable[[bb.TradingBot], object], timeout: float = 15):
+        done = threading.Event()
+        result = {"value": None, "error": None}
+
+        def command(b: bb.TradingBot) -> None:
+            try:
+                result["value"] = fn(b)
+            except Exception as exc:  # noqa: BLE001
+                result["error"] = str(exc)
+            finally:
+                done.set()
+
+        self.queue.put(("command", command))
+        if not done.wait(timeout=timeout):
+            raise ValueError("o bot nao processou o comando em 15s (websocket travado?)")
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["value"]
 
     def feed(self, payload: dict) -> dict:
         with self._lock:
             if not self.running or not self.bot:
                 raise ValueError("nenhuma execucao em andamento para alimentar")
-            bot = self.bot
-            direction = bot.cfg.first.direction
-            targets = targets_from_payload(payload.get("next"), direction) if payload.get("next") is not None else None
-            append = (payload.get("next_mode") or "replace") == "append"
-            rules = rules_from_payload(payload, required=False)
-            amount = _dec(payload, "quote_amount", "valor por compra", required=False)
-            if targets is None and rules is None and amount is None:
-                raise ValueError("nada para alimentar: informe moedas seguintes, regras de saida ou valor por compra")
-            done = threading.Event()
-            result = {"ok": True, "applied": [], "error": None}
+            plans = plans_from_payload(payload.get("plans")) if payload.get("plans") is not None else []
+            remove = [bb.normalize_symbol(s) for s in (payload.get("remove") or []) if str(s).strip()]
+            mode = (payload.get("apply") or "upsert").lower()
+            if mode not in ("upsert", "replace"):
+                raise ValueError("apply deve ser upsert ou replace")
+            if not plans and not remove and mode != "replace":
+                raise ValueError("nada para alimentar: informe moedas para incluir/atualizar ou remover")
+            changes: List[str] = []
+            if remove:
+                changes += [f"{s} removida" for s in self._command(lambda b: b.remove_plans(remove))]
+            if plans or mode == "replace":
+                changes += self._command(lambda b: b.update_plans(plans, mode))
+            return {"applied": changes, "status": self.status()}
 
-            def command(b: bb.TradingBot) -> None:
-                try:
-                    if amount is not None:
-                        b.update_quote_amount(amount)
-                        result["applied"].append("valor por compra")
-                    if rules is not None:
-                        b.update_rules(rules)
-                        result["applied"].append("regras de saida")
-                    if targets is not None:
-                        b.update_next_targets(targets, append=append)
-                        result["applied"].append("moedas seguintes")
-                except Exception as exc:  # noqa: BLE001
-                    result["ok"], result["error"] = False, str(exc)
-                finally:
-                    done.set()
-
-            self.queue.put(("command", command))
-            if not done.wait(timeout=15):
-                raise ValueError("o bot nao processou o comando em 15s (websocket travado?)")
-            if not result["ok"]:
-                raise ValueError(result["error"])
-            return {"applied": result["applied"], "status": self.status()}
-
-    def stop(self, sell_position: bool, wait_seconds: float = 30) -> dict:
+    def stop(self, sell_positions: bool, wait_seconds: float = 30) -> dict:
         with self._lock:
             if not self.running:
                 raise ValueError("nenhuma execucao em andamento")
-            self.sell_on_stop = bool(sell_position)
-            log.warning("parada solicitada pela pagina Sistema (vender posicao: %s)", self.sell_on_stop)
+            self.sell_on_stop = bool(sell_positions)
+            log.warning("parada solicitada pela pagina Sistema (vender posicoes: %s)", self.sell_on_stop)
             self._stop_event.set()
             thread = self._thread
         thread.join(timeout=wait_seconds)
@@ -273,7 +241,7 @@ def make_handler(runner: BotRunner, memlog: MemoryLogHandler):
     page = HERE / "sistema.html"
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "SistemaBot/1.0"
+        server_version = "SistemaBot/2.0"
 
         def log_message(self, fmt, *args):  # silencia o log padrao de cada requisicao
             log.debug("http %s", fmt % args)
@@ -326,7 +294,7 @@ def make_handler(runner: BotRunner, memlog: MemoryLogHandler):
                 if self.path == "/api/feed":
                     return self._json(200, runner.feed(payload))
                 if self.path == "/api/stop":
-                    return self._json(200, runner.stop(bool(payload.get("sell_position"))))
+                    return self._json(200, runner.stop(bool(payload.get("sell_positions", True))))
                 return self._json(404, {"error": "nao encontrado"})
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
@@ -371,7 +339,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         server.server_close()
         if runner.running:
             try:
-                runner.stop(sell_position=runner.sell_on_stop)
+                runner.stop(sell_positions=runner.sell_on_stop)
             except Exception as exc:  # noqa: BLE001
                 log.error("falha ao parar o bot: %s", exc)
         log.info("servidor encerrado")

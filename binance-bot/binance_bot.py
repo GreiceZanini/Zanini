@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-binance_bot.py - Automacao de compra e venda SPOT na Binance.
+binance_bot.py - Automacao de compra e venda SPOT na Binance, com varias moedas em paralelo.
 
-Fluxo:
-  1. Aguarda o preco da moeda inicial atingir o gatilho de compra -> compra a mercado.
-  2. Em posicao, monitora via WebSocket:
-       - stop-loss fixo abaixo do preco de compra;
-       - trailing stop: armado quando o lucro minimo e atingido; acompanha a maxima
-         e vende quando o preco recua um percentual/valor a partir dela.
-     Vende pelo que acionar primeiro.
-  3. Apos a venda, observa a lista de moedas seguintes (cada uma com seu gatilho)
-     e compra a primeira que atingir o gatilho, ignorando as demais.
-  4. Repete o ciclo de saida. Ao final (ou com --repeat, indefinidamente) encerra.
+Cada moeda tem o seu proprio plano:
+  - gatilho de compra (preco) e valor da compra em REAIS (convertido pela cotacao da moeda de
+    cotacao do par, ex.: USDTBRL, quando o par nao e em BRL);
+  - stop-loss: em R$ (perda maxima na operacao), em % ou em preco;
+  - minimo para venda na alta: preco alvo, lucro minimo em R$ ou %;
+  - trailing: recuo a partir da maxima, em % ou R$, que dispara a venda; nunca vende abaixo do
+    minimo para venda (o minimo e o piso do trailing).
+Todas as moedas sao observadas ao mesmo tempo; pode haver varias posicoes abertas em paralelo.
+Depois de vender, a moeda volta a esperar o gatilho de compra, ate o bot ser desligado.
 
 Modos: simulate (padrao, sem ordens reais), testnet (Spot Testnet) e live (dinheiro real).
 Credenciais: variaveis de ambiente BINANCE_API_KEY / BINANCE_API_SECRET
@@ -40,7 +39,11 @@ from typing import Callable, Dict, List, Optional
 log = logging.getLogger("binance_bot")
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
 DEFAULT_STEP = Decimal("0.00000001")
+LEVEL_PRECISION = Decimal("1e-12")   # arredondamento dos niveis calculados (stop, minimo, trailing)
+BRL = "BRL"
+KNOWN_QUOTES = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "BRL", "EUR", "TRY")
 
 
 # --------------------------------------------------------------------------- utilidades
@@ -54,17 +57,25 @@ def fmt_ts(dt: datetime) -> str:
 
 def to_dec(value) -> Decimal:
     try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError) as exc:
+        return Decimal(str(value).strip().replace(",", "."))
+    except (InvalidOperation, ValueError, TypeError, AttributeError) as exc:
         raise ValueError(f"valor numerico invalido: {value!r}") from exc
 
 
-def dec_str(value: Decimal) -> str:
+def dec_str(value: Optional[Decimal]) -> str:
     """Representacao decimal simples (sem notacao cientifica), sem zeros a direita."""
+    if value is None:
+        return "-"
     s = format(value, "f")
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s or "0"
+
+
+def brl_str(value: Optional[Decimal]) -> str:
+    if value is None:
+        return "-"
+    return "R$ " + dec_str(value.quantize(Decimal("0.01")))
 
 
 def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
@@ -73,6 +84,18 @@ def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
         return value
     steps = (value / step).to_integral_value(rounding=ROUND_DOWN)
     return (steps * step).quantize(step)
+
+
+def normalize_symbol(text: str) -> str:
+    """'s/usdt' -> 'SUSDT'; aceita barra, hifen e espacos."""
+    return "".join(ch for ch in str(text).upper() if ch.isalnum())
+
+
+def split_symbol(symbol: str):
+    for q in KNOWN_QUOTES:
+        if symbol.endswith(q) and len(symbol) > len(q):
+            return symbol[: -len(q)], q
+    return symbol[:-4], symbol[-4:]
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
@@ -89,7 +112,7 @@ def load_dotenv(path: Path = Path(".env")) -> None:
             os.environ[key] = val
 
 
-# --------------------------------------------------------------------------- modelos
+# --------------------------------------------------------------------------- modelos de mercado
 @dataclass
 class SymbolFilters:
     symbol: str
@@ -99,10 +122,12 @@ class SymbolFilters:
     min_qty: Decimal = ZERO
     tick_size: Decimal = DEFAULT_STEP
     min_notional: Decimal = ZERO
+    quote_precision: int = 8
 
     @classmethod
     def from_exchange_info(cls, info: dict) -> "SymbolFilters":
-        f = cls(symbol=info["symbol"], base_asset=info["baseAsset"], quote_asset=info["quoteAsset"])
+        f = cls(symbol=info["symbol"], base_asset=info["baseAsset"], quote_asset=info["quoteAsset"],
+                quote_precision=int(info.get("quoteAssetPrecision", 8)))
         for flt in info.get("filters", []):
             t = flt.get("filterType")
             if t == "LOT_SIZE":
@@ -121,13 +146,6 @@ class SymbolFilters:
         return cls(symbol=symbol, base_asset=base, quote_asset=quote)
 
 
-def split_symbol(symbol: str):
-    for q in ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "BRL", "EUR", "TRY"):
-        if symbol.endswith(q) and len(symbol) > len(q):
-            return symbol[: -len(q)], q
-    return symbol[:-4], symbol[-4:]
-
-
 @dataclass
 class Fill:
     symbol: str
@@ -141,103 +159,125 @@ class Fill:
     time: datetime
 
 
-@dataclass
-class Target:
-    symbol: str
-    trigger: Decimal
-    direction: str = "auto"           # auto | below | above
-    resolved: Optional[str] = None    # below => compra quando preco <= gatilho; above => >= gatilho
+class OrderError(Exception):
+    pass
 
-    def check(self, price: Decimal) -> bool:
-        if self.resolved is None:
-            if self.direction in ("below", "above"):
-                self.resolved = self.direction
-            elif price > self.trigger:
-                self.resolved = "below"
-            elif price < self.trigger:
-                self.resolved = "above"
-            else:
-                return True
-            log.info("%s: gatilho %s, preco atual %s -> compra quando preco %s gatilho",
-                     self.symbol, dec_str(self.trigger), dec_str(price),
-                     "<=" if self.resolved == "below" else ">=")
-        return price <= self.trigger if self.resolved == "below" else price >= self.trigger
+
+# --------------------------------------------------------------------------- plano por moeda
+@dataclass
+class Rule:
+    """Uma regra com unidade e valor. Unidades:
+    pct   -> percentual (do preco de compra; no trailing, da maxima)
+    money -> valor em REAIS sobre a operacao inteira
+    price -> preco (nivel absoluto no stop e no minimo de venda)
+    """
+    unit: str
+    value: Decimal
 
     @classmethod
-    def parse(cls, text: str, direction: str = "auto") -> "Target":
-        if ":" not in text:
-            raise ValueError(f"formato invalido '{text}'. Use SIMBOLO:PRECO (ex.: ETHUSDT:3000)")
-        sym, _, price = text.partition(":")
-        trigger = to_dec(price.strip())
-        if trigger <= ZERO:
-            raise ValueError(f"gatilho deve ser positivo: {text}")
-        return cls(symbol=sym.strip().upper(), trigger=trigger, direction=direction)
+    def parse(cls, text: str) -> "Rule":
+        if ":" not in str(text):
+            raise ValueError(f"regra invalida '{text}'. Use unidade:valor, ex.: money:1 | pct:0.8 | price:0.071")
+        unit, _, val = str(text).partition(":")
+        return cls(unit.strip().lower(), to_dec(val))
+
+    def to_dict(self) -> dict:
+        return {"unit": self.unit, "value": dec_str(self.value)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Rule":
+        return cls(str(d.get("unit", "")).lower(), to_dec(d.get("value")))
 
 
 @dataclass
 class ExitRules:
-    """Regras de saida. Para cada regra, informe exatamente UMA unidade:
-    pct   -> percentual do preco de compra (ou da maxima, no trailing);
-    abs   -> distancia no preco por unidade da moeda (na moeda de cotacao);
-    money -> valor em dinheiro sobre a operacao inteira (ex.: recuo de R$1 em uma compra de R$50).
-    A unidade money e convertida em distancia de preco dividindo pela quantidade comprada.
-    """
-    stop_loss_pct: Optional[Decimal] = None
-    stop_loss_abs: Optional[Decimal] = None
-    stop_loss_money: Optional[Decimal] = None
-    activation_pct: Optional[Decimal] = None
-    activation_abs: Optional[Decimal] = None
-    activation_money: Optional[Decimal] = None
-    trail_pct: Optional[Decimal] = None
-    trail_abs: Optional[Decimal] = None
-    trail_money: Optional[Decimal] = None
-
-    def _groups(self):
-        return [("stop-loss", self.stop_loss_pct, self.stop_loss_abs, self.stop_loss_money),
-                ("ativacao do lucro", self.activation_pct, self.activation_abs, self.activation_money),
-                ("trailing", self.trail_pct, self.trail_abs, self.trail_money)]
+    stop: Rule          # pct | money | price
+    activation: Rule    # pct | money | price   (minimo para venda na alta)
+    trail: Rule         # pct | money           (recuo a partir da maxima)
 
     def validate(self) -> None:
-        for name, pct, ab, money in self._groups():
-            given = [v for v in (pct, ab, money) if v is not None]
-            if len(given) != 1:
-                raise ValueError(f"informe exatamente um valor para {name} (percentual, no preco ou em dinheiro)")
-            if given[0] <= ZERO:
-                raise ValueError(f"{name} deve ser positivo")
-        if self.stop_loss_pct is not None and self.stop_loss_pct >= 100:
-            raise ValueError("stop-loss percentual deve ser menor que 100")
-
-    def uses_money(self) -> bool:
-        return any(m is not None for _, _, _, m in self._groups())
-
-    @staticmethod
-    def _distance(ref: Decimal, pct, ab, money, qty: Optional[Decimal]) -> Decimal:
-        if pct is not None:
-            return ref * pct / 100
-        if ab is not None:
-            return ab
-        if qty is None or qty <= ZERO:
-            raise ValueError("regra em dinheiro exige a quantidade comprada")
-        return money / qty
-
-    def stop_loss_price(self, entry: Decimal, qty: Optional[Decimal] = None) -> Decimal:
-        return entry - self._distance(entry, self.stop_loss_pct, self.stop_loss_abs, self.stop_loss_money, qty)
-
-    def activation_price(self, entry: Decimal, qty: Optional[Decimal] = None) -> Decimal:
-        return entry + self._distance(entry, self.activation_pct, self.activation_abs, self.activation_money, qty)
-
-    def trailing_stop_price(self, highest: Decimal, qty: Optional[Decimal] = None) -> Decimal:
-        return highest - self._distance(highest, self.trail_pct, self.trail_abs, self.trail_money, qty)
+        allowed = {"stop": ("pct", "money", "price"), "activation": ("pct", "money", "price"), "trail": ("pct", "money")}
+        names = {"stop": "stop-loss", "activation": "minimo para venda na alta", "trail": "recuo do trailing"}
+        for key, units in allowed.items():
+            r = getattr(self, key)
+            if r.unit not in units:
+                raise ValueError(f"{names[key]}: unidade '{r.unit}' invalida (use {', '.join(units)})")
+            if r.value <= ZERO:
+                raise ValueError(f"{names[key]} deve ser positivo")
+            if r.unit == "pct" and key != "activation" and r.value >= 100:
+                raise ValueError(f"{names[key]} percentual deve ser menor que 100")
 
     def describe(self) -> str:
-        def one(pct, ab, money):
-            if pct is not None:
-                return f"{dec_str(pct)}%"
-            if ab is not None:
-                return f"{dec_str(ab)} no preco"
-            return f"{dec_str(money)} em dinheiro"
-        g = self._groups()
-        return (f"stop-loss={one(*g[0][1:])} ativacao-lucro={one(*g[1][1:])} trailing={one(*g[2][1:])}")
+        def one(r: Rule) -> str:
+            return {"pct": f"{dec_str(r.value)}%", "money": brl_str(r.value), "price": f"preco {dec_str(r.value)}"}[r.unit]
+        return f"stop={one(self.stop)} minimo-venda={one(self.activation)} trailing={one(self.trail)}"
+
+    def to_dict(self) -> dict:
+        return {"stop": self.stop.to_dict(), "activation": self.activation.to_dict(), "trail": self.trail.to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ExitRules":
+        return cls(Rule.from_dict(d["stop"]), Rule.from_dict(d["activation"]), Rule.from_dict(d["trail"]))
+
+
+@dataclass
+class CoinPlan:
+    symbol: str
+    trigger: Decimal
+    amount_brl: Decimal
+    rules: ExitRules
+    direction: str = "auto"     # auto | below | above
+
+    def validate(self) -> None:
+        self.symbol = normalize_symbol(self.symbol)
+        if not self.symbol:
+            raise ValueError("informe o simbolo da moeda (ex.: BTCBRL)")
+        if self.trigger <= ZERO:
+            raise ValueError(f"{self.symbol}: gatilho de compra deve ser positivo")
+        if self.amount_brl <= ZERO:
+            raise ValueError(f"{self.symbol}: valor por compra (R$) deve ser positivo")
+        if self.direction not in ("auto", "below", "above"):
+            raise ValueError(f"{self.symbol}: direcao deve ser auto, below ou above")
+        self.rules.validate()
+
+    def describe(self) -> str:
+        return (f"{self.symbol} gatilho={dec_str(self.trigger)} compra={brl_str(self.amount_brl)} "
+                f"{self.rules.describe()}")
+
+    def to_dict(self) -> dict:
+        return {"symbol": self.symbol, "trigger": dec_str(self.trigger), "amount_brl": dec_str(self.amount_brl),
+                "direction": self.direction, "rules": self.rules.to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CoinPlan":
+        p = cls(symbol=normalize_symbol(d.get("symbol", "")), trigger=to_dec(d.get("trigger")),
+                amount_brl=to_dec(d.get("amount_brl")), rules=ExitRules.from_dict(d["rules"]),
+                direction=str(d.get("direction") or "auto").lower())
+        p.validate()
+        return p
+
+    @classmethod
+    def parse(cls, text: str) -> "CoinPlan":
+        """Formato da linha de comando:
+        "SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8 [direction=auto]"
+        """
+        parts = str(text).split()
+        if len(parts) < 2:
+            raise ValueError(f"plano invalido '{text}'")
+        kv = {}
+        for p in parts[1:]:
+            if "=" not in p:
+                raise ValueError(f"plano '{parts[0]}': parametro invalido '{p}' (use chave=valor)")
+            k, _, v = p.partition("=")
+            kv[k.strip().lower()] = v.strip()
+        missing = [k for k in ("trigger", "amount", "stop", "activation", "trail") if k not in kv]
+        if missing:
+            raise ValueError(f"plano '{parts[0]}': faltam {', '.join(missing)}")
+        plan = cls(symbol=normalize_symbol(parts[0]), trigger=to_dec(kv["trigger"]), amount_brl=to_dec(kv["amount"]),
+                   rules=ExitRules(Rule.parse(kv["stop"]), Rule.parse(kv["activation"]), Rule.parse(kv["trail"])),
+                   direction=kv.get("direction", "auto").lower())
+        plan.validate()
+        return plan
 
 
 @dataclass
@@ -245,10 +285,12 @@ class Position:
     symbol: str
     qty: Decimal
     entry_price: Decimal
-    entry_quote: Decimal
+    entry_quote: Decimal          # gasto na moeda de cotacao
+    entry_brl: Decimal            # gasto em reais
+    rate: Decimal                 # cotacao (quote -> BRL) usada na compra; 1 para pares em BRL
     entry_time: datetime
     stop_loss_price: Decimal
-    activation_price: Decimal
+    activation_price: Decimal     # minimo para venda na alta (piso do trailing)
     highest: Decimal
     trailing_armed: bool = False
     trailing_stop_price: Optional[Decimal] = None
@@ -257,9 +299,10 @@ class Position:
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol, "qty": dec_str(self.qty), "entry_price": dec_str(self.entry_price),
-            "entry_quote": dec_str(self.entry_quote), "entry_time": self.entry_time.isoformat(),
-            "stop_loss_price": dec_str(self.stop_loss_price), "activation_price": dec_str(self.activation_price),
-            "highest": dec_str(self.highest), "trailing_armed": self.trailing_armed,
+            "entry_quote": dec_str(self.entry_quote), "entry_brl": dec_str(self.entry_brl), "rate": dec_str(self.rate),
+            "entry_time": self.entry_time.isoformat(), "stop_loss_price": dec_str(self.stop_loss_price),
+            "activation_price": dec_str(self.activation_price), "highest": dec_str(self.highest),
+            "trailing_armed": self.trailing_armed,
             "trailing_stop_price": dec_str(self.trailing_stop_price) if self.trailing_stop_price is not None else None,
             "buy_order_id": self.buy_order_id,
         }
@@ -268,7 +311,8 @@ class Position:
     def from_dict(cls, d: dict) -> "Position":
         return cls(
             symbol=d["symbol"], qty=to_dec(d["qty"]), entry_price=to_dec(d["entry_price"]),
-            entry_quote=to_dec(d["entry_quote"]), entry_time=datetime.fromisoformat(d["entry_time"]),
+            entry_quote=to_dec(d["entry_quote"]), entry_brl=to_dec(d.get("entry_brl", d["entry_quote"])),
+            rate=to_dec(d.get("rate", "1")), entry_time=datetime.fromisoformat(d["entry_time"]),
             stop_loss_price=to_dec(d["stop_loss_price"]), activation_price=to_dec(d["activation_price"]),
             highest=to_dec(d["highest"]), trailing_armed=bool(d.get("trailing_armed")),
             trailing_stop_price=to_dec(d["trailing_stop_price"]) if d.get("trailing_stop_price") else None,
@@ -276,16 +320,38 @@ class Position:
         )
 
 
-class Phase:
-    WAITING_BUY = "WAITING_BUY"
+class SlotPhase:
+    WAITING = "WAITING_BUY"
     HOLDING = "HOLDING"
-    WATCHING_NEXT = "WATCHING_NEXT"
-    FINISHED = "FINISHED"
     ERROR = "ERROR"
 
 
-class OrderError(Exception):
-    pass
+@dataclass
+class Slot:
+    """Estado de uma moeda: esperando gatilho ou em posicao."""
+    plan: CoinPlan
+    phase: str = SlotPhase.WAITING
+    position: Optional[Position] = None
+    resolved: Optional[str] = None     # below => compra quando preco <= gatilho; above => >= gatilho
+    buy_failures: int = 0
+    next_attempt: float = 0.0
+    last_price: Optional[Decimal] = None
+    error: Optional[str] = None
+
+    def check_trigger(self, price: Decimal) -> bool:
+        t = self.plan
+        if self.resolved is None:
+            if t.direction in ("below", "above"):
+                self.resolved = t.direction
+            elif price > t.trigger:
+                self.resolved = "below"
+            elif price < t.trigger:
+                self.resolved = "above"
+            else:
+                return True
+            log.info("%s: gatilho %s, preco atual %s -> compra quando preco %s gatilho", t.symbol,
+                     dec_str(t.trigger), dec_str(price), "<=" if self.resolved == "below" else ">=")
+        return price <= t.trigger if self.resolved == "below" else price >= t.trigger
 
 
 # --------------------------------------------------------------------------- exchanges
@@ -315,7 +381,7 @@ def parse_order_response(resp: dict, filters: SymbolFilters, side: str) -> Fill:
 
 
 class BinanceExchange:
-    """Ordens reais via python-binance (produção ou Spot Testnet)."""
+    """Ordens reais via python-binance (producao ou Spot Testnet)."""
 
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
         from binance.client import Client  # import tardio: testes nao precisam da biblioteca
@@ -415,8 +481,9 @@ class SimulatedExchange:
 
 # --------------------------------------------------------------------------- registro de operacoes
 class TradeLog:
-    FIELDS = ["timestamp_utc", "timestamp_local", "mode", "phase", "symbol", "side", "reason", "qty",
-              "avg_price", "quote_total", "commission", "commission_asset", "order_id", "pnl_quote", "pnl_pct"]
+    FIELDS = ["timestamp_utc", "timestamp_local", "mode", "symbol", "side", "reason", "qty", "avg_price",
+              "quote_total", "quote_asset", "rate_brl", "total_brl", "commission", "commission_asset", "order_id",
+              "pnl_quote", "pnl_brl", "pnl_pct"]
 
     def __init__(self, path: Path, mode: str):
         self.path = path
@@ -428,16 +495,17 @@ class TradeLog:
             self._w.writeheader()
             self._fh.flush()
 
-    def record(self, fill: Fill, phase: str, reason: str, pnl_quote: Optional[Decimal] = None,
-               pnl_pct: Optional[Decimal] = None) -> None:
+    def record(self, fill: Fill, reason: str, quote_asset: str, rate: Decimal, pnl_quote: Optional[Decimal] = None,
+               pnl_brl: Optional[Decimal] = None, pnl_pct: Optional[Decimal] = None) -> None:
         self._w.writerow({
             "timestamp_utc": fill.time.astimezone(timezone.utc).isoformat(timespec="milliseconds"),
-            "timestamp_local": fmt_ts(fill.time), "mode": self.mode, "phase": phase,
-            "symbol": fill.symbol, "side": fill.side, "reason": reason, "qty": dec_str(fill.qty),
-            "avg_price": dec_str(fill.price), "quote_total": dec_str(fill.quote),
-            "commission": dec_str(fill.commission), "commission_asset": fill.commission_asset,
-            "order_id": fill.order_id,
+            "timestamp_local": fmt_ts(fill.time), "mode": self.mode, "symbol": fill.symbol, "side": fill.side,
+            "reason": reason, "qty": dec_str(fill.qty), "avg_price": dec_str(fill.price),
+            "quote_total": dec_str(fill.quote), "quote_asset": quote_asset, "rate_brl": dec_str(rate),
+            "total_brl": dec_str((fill.quote * rate).quantize(Decimal("0.01"))),
+            "commission": dec_str(fill.commission), "commission_asset": fill.commission_asset, "order_id": fill.order_id,
             "pnl_quote": dec_str(pnl_quote) if pnl_quote is not None else "",
+            "pnl_brl": dec_str(pnl_brl.quantize(Decimal("0.01"))) if pnl_brl is not None else "",
             "pnl_pct": dec_str(pnl_pct.quantize(Decimal("0.0001"))) if pnl_pct is not None else "",
         })
         self._fh.flush()
@@ -450,19 +518,25 @@ class TradeLog:
 @dataclass
 class BotConfig:
     mode: str                          # simulate | testnet | live
-    first: Target
-    next_targets: List[Target]
-    quote_amount: Decimal
-    rules: ExitRules
-    repeat: bool = False
-    sell_on_stop: bool = False
+    plans: List[CoinPlan]
+    sell_on_stop: bool = True
     order_retry_seconds: int = 10
     max_buy_failures: int = 3
     state_file: Optional[Path] = None
 
+    def validate(self) -> None:
+        if not self.plans:
+            raise ValueError("informe pelo menos uma moeda")
+        seen = set()
+        for p in self.plans:
+            p.validate()
+            if p.symbol in seen:
+                raise ValueError(f"simbolo repetido: {p.symbol} (cada moeda aparece uma vez)")
+            seen.add(p.symbol)
+
 
 class TradingBot:
-    """Logica de decisao. Recebe precos via handle_price(); executa ordens pela exchange injetada."""
+    """Varias moedas em paralelo. Recebe precos via handle_price(); executa ordens pela exchange injetada."""
 
     def __init__(self, cfg: BotConfig, exchange, trade_log: Optional[TradeLog] = None,
                  on_symbols_changed: Optional[Callable[[List[str]], None]] = None):
@@ -470,59 +544,97 @@ class TradingBot:
         self.ex = exchange
         self.trades = trade_log
         self.on_symbols_changed = on_symbols_changed or (lambda symbols: None)
-        self.phase = Phase.WAITING_BUY
-        self.position: Optional[Position] = None
+        self.slots: Dict[str, Slot] = {}
         self.filters: Dict[str, SymbolFilters] = {}
+        self.rates: Dict[str, Decimal] = {BRL: ONE}      # moeda de cotacao -> cotacao em BRL
         self.last_prices: Dict[str, Decimal] = {}
-        self.realized_pnl = ZERO
-        self.cycles_done = 0
-        self._buy_failures = 0
-        self._next_order_attempt = 0.0
+        self.realized_brl = ZERO
+        self.sales = 0
+        self.phase = "RUNNING"
         self.error_message: Optional[str] = None
+        self._rate_warned: set = set()
 
     # -- preparacao -------------------------------------------------------------
-    def all_symbols(self) -> List[str]:
-        seen, out = set(), []
-        for t in [self.cfg.first, *self.cfg.next_targets]:
-            if t.symbol not in seen:
-                seen.add(t.symbol)
-                out.append(t.symbol)
-        return out
-
-    def prepare(self) -> None:
-        self.cfg.rules.validate()
-        for sym in self.all_symbols():
-            f = self.ex.filters(sym)
-            self.filters[sym] = f
-            if f.min_notional > ZERO and self.cfg.quote_amount < f.min_notional:
-                raise ValueError(f"{sym}: valor por operacao {dec_str(self.cfg.quote_amount)} abaixo do minimo "
-                                 f"da Binance ({dec_str(f.min_notional)} {f.quote_asset})")
-            log.info("filtros %s: step=%s minQty=%s tick=%s minNotional=%s", sym, dec_str(f.step_size),
-                     dec_str(f.min_qty), dec_str(f.tick_size), dec_str(f.min_notional))
-        quotes = {self.filters[s].quote_asset for s in self.all_symbols()}
-        if len(quotes) > 1:
-            raise ValueError(f"todos os simbolos devem usar a mesma moeda de cotacao; encontrados: {sorted(quotes)}")
-        r = self.cfg.rules
-        same_unit = [(r.trail_pct, r.activation_pct), (r.trail_abs, r.activation_abs), (r.trail_money, r.activation_money)]
-        if any(t is not None and a is not None and t >= a for t, a in same_unit):
-            log.warning("ATENCAO: o recuo do trailing e maior ou igual ao lucro minimo de ativacao; "
-                        "a venda pelo trailing pode ocorrer abaixo do preco de compra.")
+    def rate_symbols(self) -> List[str]:
+        quotes = {self.filters[s].quote_asset for s in self.slots if s in self.filters}
+        return sorted(f"{q}{BRL}" for q in quotes if q != BRL)
 
     def watched_symbols(self) -> List[str]:
-        if self.phase == Phase.WAITING_BUY:
-            return [self.cfg.first.symbol]
-        if self.phase == Phase.HOLDING and self.position:
-            return [self.position.symbol]
-        if self.phase == Phase.WATCHING_NEXT:
-            return list(dict.fromkeys(t.symbol for t in self.cfg.next_targets))
-        return []
+        return list(dict.fromkeys([*self.slots.keys(), *self.rate_symbols()]))
 
-    def _set_phase(self, phase: str) -> None:
-        old = self.phase
-        self.phase = phase
-        log.info("fase: %s -> %s", old, phase)
-        self.save_state()
+    def _load_filters(self, symbol: str) -> SymbolFilters:
+        if symbol not in self.filters:
+            self.filters[symbol] = self.ex.filters(symbol)
+            f = self.filters[symbol]
+            log.info("filtros %s: cotacao=%s step=%s minQty=%s minNotional=%s", symbol, f.quote_asset,
+                     dec_str(f.step_size), dec_str(f.min_qty), dec_str(f.min_notional))
+        return self.filters[symbol]
+
+    def _ensure_rate(self, quote: str) -> None:
+        if quote == BRL or quote in self.rates:
+            return
+        sym = f"{quote}{BRL}"
+        try:
+            self.rates[quote] = self.ex.last_price(sym)
+            log.info("cotacao %s: %s", sym, dec_str(self.rates[quote]))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("sem cotacao inicial de %s (%s); compras em %s aguardam a cotacao chegar pelo stream",
+                        sym, exc, quote)
+
+    def prepare(self) -> None:
+        self.cfg.validate()
+        for plan in self.cfg.plans:
+            f = self._load_filters(plan.symbol)
+            self._ensure_rate(f.quote_asset)
+            self.slots[plan.symbol] = Slot(plan=plan)
+            log.info("plano: %s", plan.describe())
         self.on_symbols_changed(self.watched_symbols())
+
+    # -- conversao de moeda ------------------------------------------------------------
+    def rate_for(self, symbol: str) -> Optional[Decimal]:
+        return self.rates.get(self.filters[symbol].quote_asset)
+
+    def brl_to_quote(self, symbol: str, brl: Decimal) -> Decimal:
+        rate = self.rate_for(symbol)
+        if rate is None or rate <= ZERO:
+            raise OrderError(f"sem cotacao {self.filters[symbol].quote_asset}{BRL} para converter R$")
+        return brl / rate
+
+    # -- niveis ------------------------------------------------------------------------
+    @staticmethod
+    def _level(rule: Rule, entry: Decimal, qty: Decimal, rate: Decimal, below: bool) -> Decimal:
+        if rule.unit == "price":
+            return rule.value
+        if rule.unit == "pct":
+            level = entry * (1 - rule.value / 100) if below else entry * (1 + rule.value / 100)
+        else:
+            dist = (rule.value / rate) / qty           # R$ -> quote -> por unidade
+            level = entry - dist if below else entry + dist
+        return level.quantize(LEVEL_PRECISION)
+
+    @staticmethod
+    def _trail_distance(rule: Rule, highest: Decimal, qty: Decimal, rate: Decimal) -> Decimal:
+        if rule.unit == "pct":
+            return highest * rule.value / 100
+        return (rule.value / rate) / qty
+
+    def _trailing_stop(self, pos: Position, rules: ExitRules) -> Decimal:
+        """Recuo a partir da maxima, nunca abaixo do minimo para venda (piso)."""
+        raw = (pos.highest - self._trail_distance(rules.trail, pos.highest, pos.qty, pos.rate)).quantize(LEVEL_PRECISION)
+        return max(raw, pos.activation_price)
+
+    def _apply_levels(self, pos: Position, rules: ExitRules) -> None:
+        pos.stop_loss_price = self._level(rules.stop, pos.entry_price, pos.qty, pos.rate, below=True)
+        pos.activation_price = self._level(rules.activation, pos.entry_price, pos.qty, pos.rate, below=False)
+        if pos.trailing_armed:
+            pos.trailing_stop_price = self._trailing_stop(pos, rules)
+        if pos.stop_loss_price >= pos.entry_price:
+            log.warning("%s: stop-loss (%s) esta acima ou igual ao preco de compra (%s); vende no proximo tick",
+                        pos.symbol, dec_str(pos.stop_loss_price), dec_str(pos.entry_price))
+        if pos.activation_price <= pos.entry_price:
+            log.warning("%s: minimo para venda (%s) esta abaixo ou igual ao preco de compra (%s); o trailing "
+                        "arma de imediato e pode vender sem lucro", pos.symbol, dec_str(pos.activation_price),
+                        dec_str(pos.entry_price))
 
     # -- loop de precos -----------------------------------------------------------
     def handle_price(self, symbol: str, price: Decimal, now: Optional[float] = None) -> None:
@@ -530,83 +642,98 @@ class TradingBot:
         self.last_prices[symbol] = price
         if hasattr(self.ex, "update_price"):
             self.ex.update_price(symbol, price)
-
-        if self.phase == Phase.WAITING_BUY:
-            if symbol == self.cfg.first.symbol and self.cfg.first.check(price):
-                self._try_buy(self.cfg.first, price, now)
-        elif self.phase == Phase.HOLDING:
-            if self.position and symbol == self.position.symbol:
-                self._manage_position(price, now)
-        elif self.phase == Phase.WATCHING_NEXT:
-            for target in self.cfg.next_targets:
-                if target.symbol == symbol and target.check(price):
-                    log.info("%s atingiu o gatilho %s (preco %s); demais candidatas ignoradas",
-                             symbol, dec_str(target.trigger), dec_str(price))
-                    self._try_buy(target, price, now)
-                    break
+        if symbol.endswith(BRL) and len(symbol) > 3:
+            quote = symbol[:-3]
+            if quote in {self.filters[s].quote_asset for s in self.slots if s in self.filters}:
+                self.rates[quote] = price
+        slot = self.slots.get(symbol)
+        if not slot or self.phase != "RUNNING":
+            return
+        slot.last_price = price
+        if slot.phase == SlotPhase.WAITING:
+            if slot.check_trigger(price):
+                self._try_buy(slot, price, now)
+        elif slot.phase == SlotPhase.HOLDING and slot.position:
+            self._manage(slot, price, now)
 
     # -- compra ---------------------------------------------------------------------
-    def _try_buy(self, target: Target, price: Decimal, now: float) -> None:
-        if now < self._next_order_attempt:
+    def _try_buy(self, slot: Slot, price: Decimal, now: float) -> None:
+        if now < slot.next_attempt:
             return
-        f = self.filters[target.symbol]
-        log.info("COMPRA %s a mercado: gatilho=%s preco=%s valor=%s %s", target.symbol, dec_str(target.trigger),
-                 dec_str(price), dec_str(self.cfg.quote_amount), f.quote_asset)
+        plan, f = slot.plan, self.filters[slot.plan.symbol]
         try:
+            rate = self.rate_for(plan.symbol)
+            if rate is None:
+                if plan.symbol not in self._rate_warned:
+                    self._rate_warned.add(plan.symbol)
+                    log.warning("%s: aguardando cotacao %s%s para converter R$ em %s", plan.symbol, f.quote_asset, BRL,
+                                f.quote_asset)
+                slot.next_attempt = now + 2
+                return
+            quote_amount = floor_to_step(self.brl_to_quote(plan.symbol, plan.amount_brl),
+                                         Decimal(1).scaleb(-f.quote_precision))
+            if f.min_notional > ZERO and quote_amount < f.min_notional:
+                raise OrderError(f"{brl_str(plan.amount_brl)} = {dec_str(quote_amount)} {f.quote_asset}, abaixo do "
+                                 f"minimo da Binance ({dec_str(f.min_notional)} {f.quote_asset})")
+            log.info("COMPRA %s a mercado: gatilho=%s preco=%s valor=%s (%s %s, cotacao %s)", plan.symbol,
+                     dec_str(plan.trigger), dec_str(price), brl_str(plan.amount_brl), dec_str(quote_amount),
+                     f.quote_asset, dec_str(rate))
             if self.cfg.mode != "simulate":
                 free = self.ex.free_balance(f.quote_asset)
-                if free < self.cfg.quote_amount:
-                    raise OrderError(f"saldo insuficiente em {f.quote_asset}: {dec_str(free)} < {dec_str(self.cfg.quote_amount)}")
-            fill = self.ex.market_buy_quote(f, self.cfg.quote_amount)
+                if free < quote_amount:
+                    raise OrderError(f"saldo insuficiente em {f.quote_asset}: {dec_str(free)} < {dec_str(quote_amount)}")
+            fill = self.ex.market_buy_quote(f, quote_amount)
         except Exception as exc:  # noqa: BLE001 - qualquer falha de ordem deve ser registrada
-            self._buy_failures += 1
-            self._next_order_attempt = now + self.cfg.order_retry_seconds
-            log.error("falha na compra de %s (%d/%d): %s", target.symbol, self._buy_failures,
-                      self.cfg.max_buy_failures, exc)
-            if self._buy_failures >= self.cfg.max_buy_failures:
-                self._fail(f"compra de {target.symbol} falhou {self._buy_failures} vezes; bot interrompido")
+            slot.buy_failures += 1
+            slot.next_attempt = now + self.cfg.order_retry_seconds
+            log.error("falha na compra de %s (%d/%d): %s", plan.symbol, slot.buy_failures, self.cfg.max_buy_failures, exc)
+            if slot.buy_failures >= self.cfg.max_buy_failures:
+                slot.phase = SlotPhase.ERROR
+                slot.error = f"compra falhou {slot.buy_failures} vezes: {exc}"
+                log.error("%s desativada apos falhas seguidas; as outras moedas continuam", plan.symbol)
+                self.save_state()
             return
-        self._buy_failures = 0
-        rules = self.cfg.rules
-        self.position = Position(
-            symbol=fill.symbol, qty=fill.qty, entry_price=fill.price, entry_quote=fill.quote, entry_time=fill.time,
-            stop_loss_price=rules.stop_loss_price(fill.price, fill.qty),
-            activation_price=rules.activation_price(fill.price, fill.qty),
-            highest=fill.price, buy_order_id=fill.order_id,
-        )
-        log.info("ORDEM EXECUTADA | COMPRA %s | qtd=%s | preco medio=%s | total=%s %s | taxa=%s %s | id=%s | %s",
+        slot.buy_failures = 0
+        pos = Position(symbol=fill.symbol, qty=fill.qty, entry_price=fill.price, entry_quote=fill.quote,
+                       entry_brl=fill.quote * rate, rate=rate, entry_time=fill.time, stop_loss_price=ZERO,
+                       activation_price=ZERO, highest=fill.price, buy_order_id=fill.order_id)
+        self._apply_levels(pos, plan.rules)
+        slot.position, slot.phase = pos, SlotPhase.HOLDING
+        log.info("ORDEM EXECUTADA | COMPRA %s | qtd=%s | preco medio=%s | total=%s %s (%s) | taxa=%s %s | id=%s | %s",
                  fill.symbol, dec_str(fill.qty), dec_str(fill.price), dec_str(fill.quote), f.quote_asset,
-                 dec_str(fill.commission), fill.commission_asset, fill.order_id, fmt_ts(fill.time))
-        log.info("niveis: stop-loss=%s | ativacao do trailing=%s | recuo do trailing=%s",
-                 dec_str(self.position.stop_loss_price), dec_str(self.position.activation_price),
-                 rules.describe().split("trailing=")[1])
+                 brl_str(pos.entry_brl), dec_str(fill.commission), fill.commission_asset, fill.order_id, fmt_ts(fill.time))
+        log.info("niveis %s: stop-loss=%s | minimo para venda=%s | trailing=%s a partir da maxima (nunca abaixo do minimo)",
+                 fill.symbol, dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
+                 plan.rules.describe().split("trailing=")[1])
         if self.trades:
-            self.trades.record(fill, self.phase, f"gatilho {dec_str(target.trigger)}")
-        self._set_phase(Phase.HOLDING)
+            self.trades.record(fill, f"gatilho {dec_str(plan.trigger)}", f.quote_asset, rate)
+        self.save_state()
 
     # -- gestao da posicao -----------------------------------------------------------
-    def _manage_position(self, price: Decimal, now: float) -> None:
-        pos = self.position
+    def _manage(self, slot: Slot, price: Decimal, now: float) -> None:
+        pos, rules = slot.position, slot.plan.rules
         if price <= pos.stop_loss_price:
-            self._try_sell(price, "STOP_LOSS", now)
+            self._try_sell(slot, price, "STOP_LOSS", now)
             return
         if not pos.trailing_armed and price >= pos.activation_price:
             pos.trailing_armed = True
             pos.highest = price
-            pos.trailing_stop_price = self.cfg.rules.trailing_stop_price(price, pos.qty)
-            log.info("TRAILING ARMADO %s: preco=%s (lucro minimo atingido). Venda se recuar ate %s",
-                     pos.symbol, dec_str(price), dec_str(pos.trailing_stop_price))
+            pos.trailing_stop_price = self._trailing_stop(pos, rules)
+            log.info("TRAILING ARMADO %s: preco=%s atingiu o minimo para venda (%s). Venda se recuar ate %s",
+                     pos.symbol, dec_str(price), dec_str(pos.activation_price), dec_str(pos.trailing_stop_price))
             self.save_state()
         if pos.trailing_armed:
             if price > pos.highest:
                 pos.highest = price
-                new_stop = self.cfg.rules.trailing_stop_price(price, pos.qty)
+                new_stop = self._trailing_stop(pos, rules)
                 if pos.trailing_stop_price is None or new_stop > pos.trailing_stop_price:
                     pos.trailing_stop_price = new_stop
                     log.info("nova maxima %s: %s -> trailing stop em %s", pos.symbol, dec_str(price), dec_str(new_stop))
                     self.save_state()
-            elif pos.trailing_stop_price is not None and price <= pos.trailing_stop_price:
-                self._try_sell(price, "TRAILING_STOP", now)
+            elif price < pos.highest and pos.trailing_stop_price is not None and price <= pos.trailing_stop_price:
+                # vende apenas apos uma reversao (preco abaixo da maxima): nunca no tick em que o minimo e atingido
+                reason = "TRAILING_STOP" if pos.trailing_stop_price > pos.activation_price else "MINIMO_VENDA"
+                self._try_sell(slot, price, reason, now)
 
     def _sell_quantity(self, pos: Position, price: Decimal) -> Decimal:
         f = self.filters[pos.symbol]
@@ -624,145 +751,152 @@ class TradingBot:
             raise OrderError(f"valor da venda {dec_str(qty * price)} abaixo do minimo {dec_str(f.min_notional)}")
         return qty
 
-    def _try_sell(self, price: Decimal, reason: str, now: float) -> None:
-        if now < self._next_order_attempt:
+    def _try_sell(self, slot: Slot, price: Decimal, reason: str, now: float) -> None:
+        if now < slot.next_attempt:
             return
-        pos = self.position
-        f = self.filters[pos.symbol]
-        log.info("VENDA %s a mercado por %s: preco=%s stop-loss=%s trailing=%s maxima=%s", pos.symbol, reason,
-                 dec_str(price), dec_str(pos.stop_loss_price),
-                 dec_str(pos.trailing_stop_price) if pos.trailing_stop_price is not None else "-", dec_str(pos.highest))
+        pos, f = slot.position, self.filters[slot.plan.symbol]
+        log.info("VENDA %s a mercado por %s: preco=%s stop-loss=%s minimo=%s trailing=%s maxima=%s", pos.symbol, reason,
+                 dec_str(price), dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
+                 dec_str(pos.trailing_stop_price), dec_str(pos.highest))
         try:
             qty = self._sell_quantity(pos, price)
             fill = self.ex.market_sell(f, qty)
         except Exception as exc:  # noqa: BLE001
-            self._next_order_attempt = now + self.cfg.order_retry_seconds
+            slot.next_attempt = now + self.cfg.order_retry_seconds
             log.error("FALHA NA VENDA de %s (%s). Nova tentativa em %ss. POSICAO CONTINUA ABERTA. Erro: %s",
                       pos.symbol, reason, self.cfg.order_retry_seconds, exc)
             return
-        pnl = fill.quote - pos.entry_quote
-        pnl_pct = pnl / pos.entry_quote * 100 if pos.entry_quote else ZERO
-        self.realized_pnl += pnl
-        self.cycles_done += 1
-        log.info("ORDEM EXECUTADA | VENDA %s (%s) | qtd=%s | preco medio=%s | total=%s %s | taxa=%s %s | id=%s | %s",
+        rate = self.rate_for(pos.symbol) or pos.rate
+        pnl_quote = fill.quote - pos.entry_quote
+        pnl_brl = fill.quote * rate - pos.entry_brl
+        pnl_pct = pnl_quote / pos.entry_quote * 100 if pos.entry_quote else ZERO
+        self.realized_brl += pnl_brl
+        self.sales += 1
+        log.info("ORDEM EXECUTADA | VENDA %s (%s) | qtd=%s | preco medio=%s | total=%s %s (%s) | taxa=%s %s | id=%s | %s",
                  fill.symbol, reason, dec_str(fill.qty), dec_str(fill.price), dec_str(fill.quote), f.quote_asset,
-                 dec_str(fill.commission), fill.commission_asset, fill.order_id, fmt_ts(fill.time))
-        log.info("RESULTADO %s: %s %s (%s%%) | acumulado: %s %s", fill.symbol, dec_str(pnl), f.quote_asset,
-                 dec_str(pnl_pct.quantize(Decimal("0.01"))), dec_str(self.realized_pnl), f.quote_asset)
+                 brl_str(fill.quote * rate), dec_str(fill.commission), fill.commission_asset, fill.order_id, fmt_ts(fill.time))
+        log.info("RESULTADO %s: %s (%s%%) | acumulado: %s em %d venda(s)", fill.symbol, brl_str(pnl_brl),
+                 dec_str(pnl_pct.quantize(Decimal("0.01"))), brl_str(self.realized_brl), self.sales)
         if self.trades:
-            self.trades.record(fill, self.phase, reason, pnl, pnl_pct)
-        self.position = None
-        self._after_sell()
-
-    def _after_sell(self) -> None:
-        if not self.cfg.next_targets:
-            self._set_phase(Phase.FINISHED)
-            return
-        if self.cycles_done >= 2 and not self.cfg.repeat:
-            log.info("ciclo completo (moeda inicial + moeda seguinte). Use --repeat para continuar observando a lista.")
-            self._set_phase(Phase.FINISHED)
-            return
-        for t in self.cfg.next_targets:
-            t.resolved = None
-        log.info("observando moedas seguintes: %s",
-                 ", ".join(f"{t.symbol}@{dec_str(t.trigger)}" for t in self.cfg.next_targets))
-        self._set_phase(Phase.WATCHING_NEXT)
-
-    def _fail(self, message: str) -> None:
-        self.error_message = message
-        log.error(message)
-        self._set_phase(Phase.ERROR)
+            self.trades.record(fill, reason, f.quote_asset, rate, pnl_quote, pnl_brl, pnl_pct)
+        slot.position, slot.phase, slot.resolved = None, SlotPhase.WAITING, None
+        log.info("%s volta a observar o gatilho %s", pos.symbol, dec_str(slot.plan.trigger))
+        self.save_state()
 
     # -- atualizacoes em execucao (alimentar) ---------------------------------------------
-    def update_next_targets(self, targets: List[Target], append: bool = False) -> None:
-        """Substitui ou acrescenta moedas seguintes. Valida filtros e moeda de cotacao antes de aplicar."""
-        quote = self.filters[self.cfg.first.symbol].quote_asset
-        for t in targets:
-            if t.symbol not in self.filters:
-                f = self.ex.filters(t.symbol)
-                if f.quote_asset != quote:
-                    raise ValueError(f"{t.symbol} usa {f.quote_asset}; a rodada opera em {quote}")
-                if f.min_notional > ZERO and self.cfg.quote_amount < f.min_notional:
-                    raise ValueError(f"{t.symbol}: valor por operacao abaixo do minimo {dec_str(f.min_notional)}")
-                self.filters[t.symbol] = f
-        if append:
-            existing = {t.symbol for t in self.cfg.next_targets}
-            self.cfg.next_targets.extend(t for t in targets if t.symbol not in existing)
-        else:
-            self.cfg.next_targets = list(targets)
-        log.info("moedas seguintes atualizadas: %s",
-                 ", ".join(f"{t.symbol}@{dec_str(t.trigger)}" for t in self.cfg.next_targets) or "(nenhuma)")
+    def update_plans(self, plans: List[CoinPlan], mode: str = "upsert") -> List[str]:
+        """mode=upsert: inclui novas moedas e atualiza as existentes; mode=replace: a lista passa a ser esta.
+        Uma moeda com posicao aberta nao e removida: a posicao continua sendo gerida ate vender."""
+        for p in plans:
+            p.validate()
+        symbols = [p.symbol for p in plans]
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("simbolo repetido na lista")
+        for p in plans:
+            self._load_filters(p.symbol)
+        changed: List[str] = []
+        if mode == "replace":
+            for sym in list(self.slots):
+                if sym not in symbols:
+                    if self.slots[sym].position:
+                        log.warning("%s tem posicao aberta e nao foi removida; sera encerrada quando vender", sym)
+                        continue
+                    del self.slots[sym]
+                    changed.append(f"{sym} removida")
+        for p in plans:
+            slot = self.slots.get(p.symbol)
+            if slot is None:
+                self.slots[p.symbol] = Slot(plan=p)
+                self._ensure_rate(self.filters[p.symbol].quote_asset)
+                changed.append(f"{p.symbol} incluida")
+            else:
+                old_trigger = slot.plan.trigger
+                slot.plan = p
+                if slot.phase == SlotPhase.ERROR:
+                    slot.phase, slot.error, slot.buy_failures = SlotPhase.WAITING, None, 0
+                if old_trigger != p.trigger:
+                    slot.resolved = None
+                if slot.position:
+                    self._apply_levels(slot.position, p.rules)
+                    log.info("niveis recalculados %s: stop-loss=%s minimo=%s trailing=%s", p.symbol,
+                             dec_str(slot.position.stop_loss_price), dec_str(slot.position.activation_price),
+                             dec_str(slot.position.trailing_stop_price))
+                changed.append(f"{p.symbol} atualizada")
+        self.cfg.plans = [s.plan for s in self.slots.values()]
+        for line in changed:
+            log.info("plano: %s", line)
         self.save_state()
-        if self.phase == Phase.WATCHING_NEXT:
-            self.on_symbols_changed(self.watched_symbols())
+        self.on_symbols_changed(self.watched_symbols())
+        return changed
 
-    def update_rules(self, rules: ExitRules) -> None:
-        """Troca as regras de saida; recalcula os niveis da posicao aberta a partir da entrada e da maxima."""
-        rules.validate()
-        self.cfg.rules = rules
-        pos = self.position
-        if pos:
-            pos.stop_loss_price = rules.stop_loss_price(pos.entry_price, pos.qty)
-            pos.activation_price = rules.activation_price(pos.entry_price, pos.qty)
-            if pos.trailing_armed:
-                pos.trailing_stop_price = rules.trailing_stop_price(pos.highest, pos.qty)
-            log.info("regras atualizadas (%s): stop-loss=%s ativacao=%s trailing=%s", rules.describe(),
-                     dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
-                     dec_str(pos.trailing_stop_price) if pos.trailing_stop_price is not None else "nao armado")
-        else:
-            log.info("regras atualizadas para as proximas compras: %s", rules.describe())
+    def remove_plans(self, symbols: List[str]) -> List[str]:
+        removed = []
+        for sym in [normalize_symbol(s) for s in symbols]:
+            slot = self.slots.get(sym)
+            if not slot:
+                raise ValueError(f"{sym} nao esta na lista")
+            if slot.position:
+                raise ValueError(f"{sym} tem posicao aberta; venda pela aba Parar ou aguarde a venda antes de remover")
+            del self.slots[sym]
+            removed.append(sym)
+            log.info("plano: %s removida", sym)
+        self.cfg.plans = [s.plan for s in self.slots.values()]
         self.save_state()
+        self.on_symbols_changed(self.watched_symbols())
+        return removed
 
-    def update_quote_amount(self, amount: Decimal) -> None:
-        if amount <= ZERO:
-            raise ValueError("valor por compra deve ser positivo")
-        for sym, f in self.filters.items():
-            if f.min_notional > ZERO and amount < f.min_notional:
-                raise ValueError(f"{sym}: valor {dec_str(amount)} abaixo do minimo {dec_str(f.min_notional)}")
-        self.cfg.quote_amount = amount
-        log.info("valor por compra atualizado: %s", dec_str(amount))
-        self.save_state()
+    def open_positions(self) -> List[Position]:
+        return [s.position for s in self.slots.values() if s.position]
 
     def snapshot(self) -> dict:
-        """Estado atual em formato serializavel (usado pela interface web)."""
-        return {
-            "phase": self.phase, "mode": self.cfg.mode, "quote_amount": dec_str(self.cfg.quote_amount),
-            "rules": self.cfg.rules.describe(), "repeat": self.cfg.repeat,
-            "first": {"symbol": self.cfg.first.symbol, "trigger": dec_str(self.cfg.first.trigger)},
-            "next": [{"symbol": t.symbol, "trigger": dec_str(t.trigger)} for t in self.cfg.next_targets],
-            "watched": self.watched_symbols(),
-            "prices": {k: dec_str(v) for k, v in self.last_prices.items()},
-            "position": self.position.to_dict() if self.position else None,
-            "realized_pnl": dec_str(self.realized_pnl), "cycles_done": self.cycles_done,
-            "error": self.error_message, "status_line": self.status_line(),
-        }
+        coins = []
+        for sym, s in self.slots.items():
+            f = self.filters.get(sym)
+            price = s.last_price
+            pos = s.position.to_dict() if s.position else None
+            if s.position and price is not None:
+                p = s.position
+                rate = self.rate_for(sym) or p.rate
+                pos["value_brl"] = dec_str((p.qty * price * rate).quantize(Decimal("0.01")))
+                pos["pnl_brl"] = dec_str((p.qty * price * rate - p.entry_brl).quantize(Decimal("0.01")))
+                pos["pnl_pct"] = dec_str(((price / p.entry_price - 1) * 100).quantize(Decimal("0.01")))
+            coins.append({
+                "symbol": sym, "phase": s.phase, "quote_asset": f.quote_asset if f else None,
+                "rate": dec_str(self.rate_for(sym)) if f and self.rate_for(sym) is not None else None,
+                "price": dec_str(price) if price is not None else None,
+                "plan": s.plan.to_dict(), "resolved": s.resolved, "position": pos, "error": s.error,
+            })
+        return {"phase": self.phase, "mode": self.cfg.mode, "coins": coins, "watched": self.watched_symbols(),
+                "rates": {k: dec_str(v) for k, v in self.rates.items()},
+                "realized_brl": dec_str(self.realized_brl.quantize(Decimal("0.01"))), "sales": self.sales,
+                "open_positions": len(self.open_positions()), "error": self.error_message}
 
     # -- parada segura --------------------------------------------------------------------
-    def shutdown(self, sell_position: bool) -> None:
+    def shutdown(self, sell_positions: bool) -> None:
         if self.cfg.mode != "simulate":
-            for sym in self.all_symbols():
+            for sym in list(self.slots):
                 try:
                     n = self.ex.cancel_open_orders(sym)
                     if n:
                         log.warning("%s: %d ordem(ns) pendente(s) cancelada(s)", sym, n)
                 except Exception as exc:  # noqa: BLE001
                     log.error("falha ao verificar/cancelar ordens pendentes de %s: %s", sym, exc)
-        if self.position and sell_position:
-            price = self.last_prices.get(self.position.symbol)
-            if price is None:
-                try:
-                    price = self.ex.last_price(self.position.symbol)
-                except Exception as exc:  # noqa: BLE001
-                    log.error("sem preco para vender %s na parada: %s", self.position.symbol, exc)
-            if price is not None:
-                self._next_order_attempt = 0.0
-                self._try_sell(price, "STOP_MANUAL", time.time())
-        if self.position:
-            p = self.position
-            log.warning("POSICAO ABERTA MANTIDA: %s qtd=%s entrada=%s stop-loss=%s trailing=%s. "
-                        "Sem o bot rodando, NAO ha protecao de stop. Reinicie com --resume ou feche manualmente.",
-                        p.symbol, dec_str(p.qty), dec_str(p.entry_price), dec_str(p.stop_loss_price),
-                        dec_str(p.trailing_stop_price) if p.trailing_stop_price is not None else "nao armado")
+        for slot in self.slots.values():
+            if slot.position and sell_positions:
+                price = slot.last_price
+                if price is None:
+                    try:
+                        price = self.ex.last_price(slot.plan.symbol)
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("sem preco para vender %s na parada: %s", slot.plan.symbol, exc)
+                if price is not None:
+                    slot.next_attempt = 0.0
+                    self._try_sell(slot, price, "STOP_MANUAL", time.time())
+            if slot.position:
+                p = slot.position
+                log.warning("POSICAO ABERTA MANTIDA: %s qtd=%s entrada=%s stop-loss=%s minimo=%s. Sem o bot rodando, "
+                            "NAO ha protecao de stop. Reinicie com --resume ou feche manualmente.", p.symbol,
+                            dec_str(p.qty), dec_str(p.entry_price), dec_str(p.stop_loss_price), dec_str(p.activation_price))
         self.save_state()
 
     # -- estado em disco -------------------------------------------------------------------
@@ -770,55 +904,61 @@ class TradingBot:
         if not self.cfg.state_file:
             return
         state = {
-            "saved_at": utcnow().isoformat(), "mode": self.cfg.mode, "phase": self.phase,
-            "position": self.position.to_dict() if self.position else None,
-            "realized_pnl": dec_str(self.realized_pnl), "cycles_done": self.cycles_done,
-            "first": {"symbol": self.cfg.first.symbol, "trigger": dec_str(self.cfg.first.trigger)},
-            "next": [{"symbol": t.symbol, "trigger": dec_str(t.trigger)} for t in self.cfg.next_targets],
+            "saved_at": utcnow().isoformat(), "mode": self.cfg.mode,
+            "realized_brl": dec_str(self.realized_brl), "sales": self.sales,
+            "slots": [{"plan": s.plan.to_dict(), "phase": s.phase, "position": s.position.to_dict() if s.position else None}
+                      for s in self.slots.values()],
         }
         tmp = self.cfg.state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.cfg.state_file)
 
-    def resume(self) -> bool:
+    def resume(self) -> int:
+        """Restaura posicoes abertas salvas para as moedas presentes no plano atual. Devolve quantas."""
         if not self.cfg.state_file or not self.cfg.state_file.is_file():
             log.warning("--resume informado, mas nao ha arquivo de estado em %s", self.cfg.state_file)
-            return False
+            return 0
         state = json.loads(self.cfg.state_file.read_text(encoding="utf-8"))
         if state.get("mode") != self.cfg.mode:
             raise ValueError(f"estado salvo e do modo '{state.get('mode')}', diferente de '{self.cfg.mode}'")
-        phase = state.get("phase")
-        self.realized_pnl = to_dec(state.get("realized_pnl", "0"))
-        self.cycles_done = int(state.get("cycles_done", 0))
-        if phase == Phase.HOLDING and state.get("position"):
-            self.position = Position.from_dict(state["position"])
-            if self.position.symbol not in self.filters:
-                self.filters[self.position.symbol] = self.ex.filters(self.position.symbol)
-            self.phase = Phase.HOLDING
-            log.info("estado retomado: posicao em %s qtd=%s entrada=%s (salvo em %s)", self.position.symbol,
-                     dec_str(self.position.qty), dec_str(self.position.entry_price), state.get("saved_at"))
-        elif phase == Phase.WATCHING_NEXT:
-            self.phase = Phase.WATCHING_NEXT
-            log.info("estado retomado: observando moedas seguintes (salvo em %s)", state.get("saved_at"))
-        else:
-            log.info("estado salvo na fase %s; iniciando do comeco", phase)
-            return False
+        self.realized_brl = to_dec(state.get("realized_brl", "0"))
+        self.sales = int(state.get("sales", 0))
+        restored = 0
+        for item in state.get("slots", []):
+            pos = item.get("position")
+            if not pos:
+                continue
+            sym = pos["symbol"]
+            if sym not in self.slots:
+                plan = CoinPlan.from_dict(item["plan"])
+                self._load_filters(sym)
+                self._ensure_rate(self.filters[sym].quote_asset)
+                self.slots[sym] = Slot(plan=plan)
+                self.cfg.plans.append(plan)
+                log.info("%s nao estava no plano informado; recuperada do estado salvo", sym)
+            slot = self.slots[sym]
+            slot.position = Position.from_dict(pos)
+            slot.phase = SlotPhase.HOLDING
+            self._apply_levels(slot.position, slot.plan.rules)
+            restored += 1
+            log.info("posicao retomada: %s qtd=%s entrada=%s (salvo em %s)", sym, dec_str(slot.position.qty),
+                     dec_str(slot.position.entry_price), state.get("saved_at"))
         self.on_symbols_changed(self.watched_symbols())
-        return True
+        return restored
 
     def status_line(self) -> str:
-        if self.phase == Phase.HOLDING and self.position:
-            p = self.position
-            price = self.last_prices.get(p.symbol)
-            pnl = f"{dec_str(((price / p.entry_price - 1) * 100).quantize(Decimal('0.01')))}%" if price else "-"
-            return (f"[{self.phase}] {p.symbol} preco={dec_str(price) if price else '-'} entrada={dec_str(p.entry_price)} "
-                    f"({pnl}) stop={dec_str(p.stop_loss_price)} "
-                    f"trailing={'armado em ' + dec_str(p.trailing_stop_price) if p.trailing_armed else 'ativa em ' + dec_str(p.activation_price)} "
-                    f"maxima={dec_str(p.highest)}")
-        targets = [self.cfg.first] if self.phase == Phase.WAITING_BUY else self.cfg.next_targets
-        parts = [f"{t.symbol}={dec_str(self.last_prices[t.symbol]) if t.symbol in self.last_prices else '-'}"
-                 f"(gatilho {dec_str(t.trigger)})" for t in targets]
-        return f"[{self.phase}] " + " ".join(parts)
+        parts = []
+        for sym, s in self.slots.items():
+            price = dec_str(s.last_price) if s.last_price is not None else "-"
+            if s.position:
+                p = s.position
+                parts.append(f"{sym} EM POSICAO preco={price} entrada={dec_str(p.entry_price)} stop={dec_str(p.stop_loss_price)} "
+                             f"min={dec_str(p.activation_price)} trailing={dec_str(p.trailing_stop_price) if p.trailing_armed else 'nao armado'}")
+            elif s.phase == SlotPhase.ERROR:
+                parts.append(f"{sym} ERRO")
+            else:
+                parts.append(f"{sym} aguardando gatilho {dec_str(s.plan.trigger)} preco={price}")
+        return " | ".join(parts) + f" | acumulado={brl_str(self.realized_brl)}"
 
 
 # --------------------------------------------------------------------------- feed de precos (WebSocket)
@@ -827,7 +967,7 @@ class PriceFeed:
 
     A cada mudanca de simbolos (ou reconexao) o gerenciador e recriado por completo: a python-binance
     identifica sockets pelo caminho dos streams e reabrir o mesmo caminho logo apos stop_socket()
-    pode deixar dois ouvintes ativos. Mudancas de fase sao raras, entao recriar e simples e seguro.
+    pode deixar dois ouvintes ativos. Mudancas sao raras, entao recriar e simples e seguro.
     A propria biblioteca ja reconecta quedas curtas; o watchdog do loop principal cobre o restante.
     """
 
@@ -865,7 +1005,10 @@ class PriceFeed:
 
     def set_symbols(self, symbols: List[str]) -> None:
         with self._lock:
-            self._symbols = list(symbols)
+            symbols = list(symbols)
+            if self._enabled and self._twm is not None and symbols == self._symbols:
+                return
+            self._symbols = symbols
             if not self._enabled:
                 return
             self._close()
@@ -881,6 +1024,8 @@ class PriceFeed:
 
     def restart(self) -> None:
         log.warning("reconectando websocket...")
+        with self._lock:
+            self._close()
         self.set_symbols(self._symbols)
 
     def stop(self) -> None:
@@ -890,37 +1035,25 @@ class PriceFeed:
 
 
 # --------------------------------------------------------------------------- CLI
+PLAN_HELP = ('plano de uma moeda, entre aspas, repita para varias: "SIMBOLO trigger=PRECO amount=REAIS '
+             'stop=UNIDADE:VALOR activation=UNIDADE:VALOR trail=UNIDADE:VALOR [direction=auto|below|above]". '
+             'Unidades: money (R$ na operacao), pct (%%), price (preco). '
+             'Ex.: "SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8"')
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Bot spot Binance: compra por gatilho, stop-loss fixo + trailing stop, recompra em lista de moedas.",
+        description="Bot spot Binance: varias moedas em paralelo, compra por gatilho, stop-loss, minimo de venda e trailing.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--mode", choices=["simulate", "testnet", "live"], default="simulate",
                    help="simulate: sem ordens reais; testnet: Spot Testnet da Binance; live: dinheiro real")
-    p.add_argument("--symbol", required=True, help="moeda inicial, ex.: BTCUSDT")
-    p.add_argument("--buy-trigger", required=True, help="preco de gatilho da compra inicial")
-    p.add_argument("--buy-direction", choices=["auto", "below", "above"], default="auto",
-                   help="auto: compra quando o preco ATINGE o gatilho vindo de onde estiver; "
-                        "below: compra quando preco <= gatilho; above: quando preco >= gatilho")
-    p.add_argument("--quote-amount", required=True,
-                   help="valor por compra na moeda de cotacao do par (BTCBRL -> reais; BTCUSDT -> USDT). Ex.: 50")
-    p.add_argument("--next", action="append", default=[], metavar="SIMBOLO:PRECO",
-                   help="moeda seguinte com gatilho de recompra; repita a opcao para varias (ex.: --next ETHUSDT:3000)")
-    p.add_argument("--repeat", action="store_true",
-                   help="apos vender a moeda seguinte, volta a observar a lista indefinidamente")
-    g = p.add_argument_group("regras de saida (em cada regra informe UMA unidade: pct, abs ou money)")
-    g.add_argument("--stop-loss-pct", help="stop-loss em %% abaixo do preco de compra (ex.: 2)")
-    g.add_argument("--stop-loss-abs", help="stop-loss como distancia no preco por unidade da moeda")
-    g.add_argument("--stop-loss-money", help="stop-loss em dinheiro sobre a operacao (ex.: 2 = perder no maximo R$2)")
-    g.add_argument("--profit-activation-pct", help="lucro minimo em %% que arma o trailing stop (ex.: 3)")
-    g.add_argument("--profit-activation-abs", help="lucro minimo como distancia no preco por unidade")
-    g.add_argument("--profit-activation-money", help="lucro minimo em dinheiro sobre a operacao (ex.: 1.5)")
-    g.add_argument("--trail-pct", help="recuo em %% a partir da maxima que dispara a venda (ex.: 1)")
-    g.add_argument("--trail-abs", help="recuo como distancia no preco por unidade a partir da maxima")
-    g.add_argument("--trail-money", help="recuo em dinheiro sobre a operacao a partir da maxima (ex.: 1 = R$1)")
+    p.add_argument("--plan", action="append", default=[], metavar="PLANO", help=PLAN_HELP)
+    p.add_argument("--config", metavar="ARQUIVO.json",
+                   help='arquivo JSON com {"plans": [...]} no formato salvo pela pagina Sistema')
     o = p.add_argument_group("operacao")
-    o.add_argument("--sell-on-stop", action="store_true",
-                   help="ao parar (Ctrl+C), vende a mercado a posicao aberta antes de encerrar")
-    o.add_argument("--resume", action="store_true", help="retoma a posicao/fase salva no arquivo de estado")
+    o.add_argument("--no-sell-on-stop", action="store_true",
+                   help="ao parar (Ctrl+C), NAO vende as posicoes abertas (padrao: vende a mercado)")
+    o.add_argument("--resume", action="store_true", help="retoma as posicoes salvas no arquivo de estado")
     o.add_argument("--yes", action="store_true", help="nao pedir confirmacao no modo live")
     o.add_argument("--watchdog-seconds", type=int, default=90,
                    help="sem mensagens do websocket por este tempo -> consulta REST e reconecta")
@@ -932,7 +1065,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--sim-fee-pct", default="0.1", help="taxa simulada por ordem em %%")
     s.add_argument("--sim-slippage-pct", default="0", help="slippage simulado em %%")
     s.add_argument("--replay", metavar="ARQUIVO",
-                   help="(apenas simulate) le precos de um CSV 'SIMBOLO,PRECO' em vez do websocket; sem rede")
+                   help="(apenas simulate) le precos de um CSV 'SIMBOLO,PRECO' em vez do websocket; sem rede. "
+                        "Inclua linhas USDTBRL,<cotacao> para pares em USDT")
     return p
 
 
@@ -953,28 +1087,21 @@ def setup_logging(data_dir: Path, level: str) -> None:
     logging.getLogger("websockets").setLevel(logging.WARNING)
 
 
-def opt_dec(v: Optional[str]) -> Optional[Decimal]:
-    return to_dec(v) if v is not None else None
+def plans_from_json(path: Path) -> List[CoinPlan]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    items = data["plans"] if isinstance(data, dict) else data
+    return [CoinPlan.from_dict(d) for d in items]
 
 
 def config_from_args(args) -> BotConfig:
-    rules = ExitRules(
-        stop_loss_pct=opt_dec(args.stop_loss_pct), stop_loss_abs=opt_dec(args.stop_loss_abs),
-        stop_loss_money=opt_dec(args.stop_loss_money),
-        activation_pct=opt_dec(args.profit_activation_pct), activation_abs=opt_dec(args.profit_activation_abs),
-        activation_money=opt_dec(args.profit_activation_money),
-        trail_pct=opt_dec(args.trail_pct), trail_abs=opt_dec(args.trail_abs), trail_money=opt_dec(args.trail_money),
-    )
-    rules.validate()
-    quote_amount = to_dec(args.quote_amount)
-    if quote_amount <= ZERO:
-        raise ValueError("--quote-amount deve ser positivo")
-    first = Target.parse(f"{args.symbol}:{args.buy_trigger}", args.buy_direction)
-    nexts = [Target.parse(n, args.buy_direction) for n in args.next]
-    data_dir = Path(args.data_dir)
-    return BotConfig(mode=args.mode, first=first, next_targets=nexts, quote_amount=quote_amount, rules=rules,
-                     repeat=args.repeat, sell_on_stop=args.sell_on_stop, order_retry_seconds=args.order_retry_seconds,
-                     state_file=data_dir / f"state_{args.mode}.json")
+    plans = [CoinPlan.parse(t) for t in args.plan]
+    if args.config:
+        plans.extend(plans_from_json(Path(args.config)))
+    cfg = BotConfig(mode=args.mode, plans=plans, sell_on_stop=not args.no_sell_on_stop,
+                    order_retry_seconds=args.order_retry_seconds,
+                    state_file=Path(args.data_dir) / f"state_{args.mode}.json")
+    cfg.validate()
+    return cfg
 
 
 def make_exchange(cfg: BotConfig, args):
@@ -1007,10 +1134,8 @@ def _unknown(symbol: str):
 def confirm_live(cfg: BotConfig) -> None:
     print("\n" + "=" * 78)
     print("MODO LIVE: ORDENS REAIS SERAO ENVIADAS COM DINHEIRO REAL.")
-    print(f"  compra inicial : {cfg.first.symbol} gatilho {dec_str(cfg.first.trigger)}")
-    print(f"  valor por ordem: {dec_str(cfg.quote_amount)}")
-    print(f"  saida          : {cfg.rules.describe()}")
-    print(f"  seguintes      : {', '.join(f'{t.symbol}@{dec_str(t.trigger)}' for t in cfg.next_targets) or '(nenhuma)'}")
+    for p in cfg.plans:
+        print("  " + p.describe())
     print("=" * 78)
     answer = input("Digite CONFIRMO para continuar: ").strip()
     if answer != "CONFIRMO":
@@ -1027,11 +1152,11 @@ def run_replay(bot: TradingBot, path: Path) -> None:
             if len(row) < 2:
                 log.warning("linha %d ignorada: %s", i, row)
                 continue
-            bot.handle_price(row[0].strip().upper(), to_dec(row[1].strip()), now=float(i) * 1000)
-            if bot.phase in (Phase.FINISHED, Phase.ERROR):
+            bot.handle_price(normalize_symbol(row[0]), to_dec(row[1]), now=float(i) * 1000)
+            if bot.phase != "RUNNING":
                 break
-    log.info("replay encerrado na fase %s | PnL realizado: %s | ciclos: %d", bot.phase,
-             dec_str(bot.realized_pnl), bot.cycles_done)
+    log.info("replay encerrado | acumulado: %s | vendas: %d | posicoes abertas: %d", brl_str(bot.realized_brl),
+             bot.sales, len(bot.open_positions()))
 
 
 def run_live_loop(bot: TradingBot, feed: PriceFeed, q: "queue.Queue", args, stop_event: threading.Event) -> None:
@@ -1039,7 +1164,7 @@ def run_live_loop(bot: TradingBot, feed: PriceFeed, q: "queue.Queue", args, stop
     last_status = 0.0
     feed.start()
     feed.set_symbols(bot.watched_symbols())
-    while not stop_event.is_set() and bot.phase not in (Phase.FINISHED, Phase.ERROR):
+    while not stop_event.is_set() and bot.phase == "RUNNING":
         try:
             item = q.get(timeout=1.0)
         except queue.Empty:
@@ -1082,14 +1207,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     try:
         cfg = config_from_args(args)
-    except ValueError as exc:
+    except (ValueError, OSError, KeyError) as exc:
         log.error("parametros invalidos: %s", exc)
         return 2
 
-    log.info("=== binance_bot | modo=%s | %s gatilho=%s | valor=%s | %s | seguintes=%s | repeat=%s ===",
-             cfg.mode.upper(), cfg.first.symbol, dec_str(cfg.first.trigger), dec_str(cfg.quote_amount),
-             cfg.rules.describe(), ", ".join(f"{t.symbol}@{dec_str(t.trigger)}" for t in cfg.next_targets) or "-",
-             cfg.repeat)
+    log.info("=== binance_bot | modo=%s | %d moeda(s) | vender ao parar=%s ===", cfg.mode.upper(), len(cfg.plans),
+             cfg.sell_on_stop)
     if cfg.mode == "live" and not args.yes:
         confirm_live(cfg)
 
@@ -1132,11 +1255,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     finally:
         if feed:
             feed.stop()
-        bot.shutdown(sell_position=cfg.sell_on_stop and stop_event.is_set())
+        bot.shutdown(sell_positions=cfg.sell_on_stop and stop_event.is_set())
         trade_log.close()
-        log.info("encerrado | fase=%s | PnL realizado=%s | ciclos=%d | log=%s | operacoes=%s", bot.phase,
-                 dec_str(bot.realized_pnl), bot.cycles_done, data_dir / "bot.log", data_dir / f"trades_{cfg.mode}.csv")
-        if bot.phase == Phase.ERROR:
+        log.info("encerrado | acumulado=%s | vendas=%d | posicoes abertas=%d | log=%s | operacoes=%s",
+                 brl_str(bot.realized_brl), bot.sales, len(bot.open_positions()), data_dir / "bot.log",
+                 data_dir / f"trades_{cfg.mode}.csv")
+        if bot.phase == "ERROR":
             exit_code = 1
     return exit_code
 

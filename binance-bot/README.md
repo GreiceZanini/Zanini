@@ -1,17 +1,18 @@
 # binance-bot
 
-Automação de compra e venda **spot** na Binance em Python, com:
+Automação de compra e venda **spot** na Binance em Python, com várias moedas em paralelo. Para cada moeda você informa:
 
-- compra a mercado quando o preço atinge um gatilho informado na hora de rodar;
-- **stop-loss fixo** abaixo do preço de compra;
-- **trailing stop** para realizar lucro: arma quando o lucro mínimo é atingido, acompanha a máxima e vende quando o preço recua um percentual ou valor a partir dela (vende na reversão, não no primeiro alvo);
-- venda pelo que acionar primeiro (stop-loss ou trailing);
-- após a venda, observa uma **lista de moedas seguintes**, cada uma com seu gatilho, e compra a primeira que atingir o gatilho, ignorando as demais;
-- preços em tempo real via **WebSocket** da Binance (stream `@trade`);
-- parada segura com Ctrl+C (cancela ordens pendentes e informa a posição aberta);
-- credenciais somente por **variáveis de ambiente**;
-- log de cada ordem com preço, quantidade, taxa e horário (`data/bot.log` e `data/trades_<modo>.csv`);
-- **modo simulação** (sem ordens reais), **testnet** oficial da Binance e **replay offline** para testar a lógica.
+- preço de gatilho da compra e valor da compra **em reais** (convertido pela cotação da moeda de cotação do par,
+  ex.: USDT/BRL, no momento da compra);
+- na queda, **stop-loss**: em R$ (perda máxima na operação), em % ou em preço;
+- na alta, **mínimo para venda**: um preço de venda (ex.: 0,071) ou um lucro mínimo em R$ (ex.: R$ 2,00), ou %;
+- **trailing**: recuo a partir da máxima (em % ou R$) que dispara a venda, nunca abaixo do mínimo para venda.
+
+Todas as moedas são observadas ao mesmo tempo; pode haver várias posições abertas em paralelo. Depois de vender, a
+moeda volta a esperar o gatilho de compra, até o bot ser desligado.
+
+Também inclui: preços em tempo real via **WebSocket**, parada segura, chaves só por variáveis de ambiente, log de cada
+ordem com preço e horário, modo **simulação**, **testnet**, replay offline e a página web local **Sistema**.
 
 Biblioteca usada: [python-binance](https://github.com/sammchardy/python-binance). A `binance-connector` foi
 marcada como deprecada pela própria Binance, por isso não foi adotada.
@@ -25,149 +26,108 @@ pip install -r requirements.txt
 cp .env.example .env                                 # preencha as chaves; o .env está no .gitignore
 ```
 
-Variáveis reconhecidas (o script carrega o `.env` automaticamente, sem sobrescrever o ambiente):
-
 | Variável | Uso |
 |---|---|
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | produção (`--mode live`) |
 | `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` | Spot Testnet (`--mode testnet`); se ausentes, usa as de produção |
 
-Na Binance, crie a chave com permissão apenas de **Spot Trading** (sem saque) e, se possível, restrita ao IP da máquina.
-Chaves da testnet: https://testnet.binance.vision.
+A simulação não usa chave. Na Binance, crie a chave com permissão apenas de **Spot Trading** (sem saque) e, se possível,
+restrita ao IP da máquina. Chaves da testnet: https://testnet.binance.vision.
 
-## Uso
-
-Exemplo completo (simulação, sem chave de API):
-
-```bash
-python binance_bot.py \
-  --mode simulate \
-  --symbol BTCUSDT --buy-trigger 60000 \
-  --quote-amount 50 \
-  --stop-loss-pct 2 \
-  --profit-activation-pct 3 --trail-pct 1 \
-  --next ETHUSDT:3000 --next SOLUSDT:150
-```
-
-Leitura: compra 50 USDT de BTC quando o preço atingir 60000; stop-loss em 58800 (−2%); quando o preço chegar a 61800 (+3%)
-o trailing é armado e passa a vender se o preço recuar 1% a partir da maior cotação atingida. Após vender, observa ETH e SOL
-e compra a que atingir seu gatilho primeiro, aplicando as mesmas regras de saída.
-
-Parâmetros principais:
-
-| Parâmetro | Descrição |
-|---|---|
-| `--mode simulate\|testnet\|live` | padrão `simulate`. `live` pede confirmação digitando `CONFIRMO` (pule com `--yes`) |
-| `--symbol`, `--buy-trigger` | moeda inicial e preço de gatilho |
-| `--buy-direction auto\|below\|above` | `auto` (padrão): compra quando o preço **atinge** o gatilho vindo de onde estiver (se está acima, espera cair até ele; se está abaixo, espera subir). `below`/`above` fixam a direção |
-| `--quote-amount` | valor de cada compra na moeda de cotação (ex.: USDT) |
-| `--stop-loss-pct`, `--stop-loss-abs` ou `--stop-loss-money` | distância do stop-loss abaixo do preço de compra |
-| `--profit-activation-pct`, `-abs` ou `-money` | lucro mínimo que arma o trailing |
-| `--trail-pct`, `--trail-abs` ou `--trail-money` | recuo a partir da máxima que dispara a venda |
-| `--next SIMBOLO:PRECO` | moeda seguinte com gatilho; repita para várias |
-| `--repeat` | após vender a moeda seguinte, volta a observar a lista indefinidamente (padrão: encerra) |
-| `--sell-on-stop` | ao parar com Ctrl+C, vende a mercado a posição aberta |
-| `--resume` | retoma a posição/fase salva em `data/state_<modo>.json` (após queda ou parada) |
-| `--data-dir` | pasta de log, operações e estado (padrão `data/`) |
-
-Todos os símbolos de uma rodada devem usar a mesma moeda de cotação (ex.: todos em USDT).
-
-### Página "Sistema" (interface web local)
-
-Para operar pelo navegador em vez da linha de comando:
+## Página "Sistema" (interface web local)
 
 ```bash
 python sistema.py            # abre http://127.0.0.1:8080
 ```
 
-A página tem três abas, com cada campo explicado em português:
+- Iniciar: modo (simulação, testnet, live com confirmação) e a lista de moedas, cada uma com símbolo, gatilho, direção,
+  valor em R$, stop-loss, mínimo para venda e recuo do trailing, cada campo com explicação em português.
+- Alimentar: com o bot rodando, inclui ou atualiza moedas (níveis das posições abertas são recalculados), substitui a
+  lista ou remove moedas sem posição aberta.
+- Parar: mostra as posições abertas e para com segurança, vendendo ou não as posições.
+- Ao lado: situação por moeda (fase, preço, gatilho, posição, níveis), cotações usadas, resultado acumulado em R$ e log.
 
-- Iniciar: modo (simulação, testnet, live com confirmação), moeda inicial, preço de gatilho, direção, valor por compra,
-  stop-loss, lucro mínimo que arma o trailing, recuo do trailing, lista de moedas seguintes, repetir lista,
-  vender ao parar, retomar estado e opções avançadas.
-- Alimentar: com o bot rodando, substitui ou acrescenta moedas seguintes, troca as regras de venda (níveis da posição
-  aberta são recalculados) e altera o valor das próximas compras.
-- Parar: mostra a posição aberta e para com segurança, vendendo ou não a posição.
+O servidor escuta só em 127.0.0.1 e não tem autenticação; não exponha na rede.
 
-Ao lado ficam a situação em tempo real (fase, preços, níveis, resultado) e o log. O servidor escuta só em
-127.0.0.1 e não tem autenticação; não exponha na rede. As chaves continuam vindo das variáveis de ambiente do
-processo `sistema.py`.
+## Linha de comando
 
-### Operar em reais e regras em dinheiro
-
-Use pares terminados em BRL (ex.: BTCBRL, ETHBRL, SOLBRL). Assim o valor por compra e as regras em dinheiro
-ficam em reais. Cada regra aceita uma destas unidades:
-
-| Unidade | Significado | Exemplo |
-|---|---|---|
-| pct | percentual do preço de compra (no trailing, da máxima) | `--trail-pct 1` = recuo de 1% |
-| money | valor em dinheiro sobre a operação inteira | `--trail-money 1` = recuo de R$1 em uma compra de R$50 |
-| abs | distância no preço por unidade da moeda | `--trail-abs 5000` = R$5.000 no preço do BTC |
-
-Exemplo: comprar R$50 de BTC quando chegar a R$500.000, aceitar perder no máximo R$2, armar o trailing com
-R$1,50 de lucro e vender quando recuar R$1 a partir da máxima:
+Um plano por moeda, entre aspas, repetindo `--plan` para várias:
 
 ```bash
-python binance_bot.py --mode simulate --symbol BTCBRL --buy-trigger 500000 --quote-amount 50 \
-  --stop-loss-money 2 --profit-activation-money 1.5 --trail-money 1
+python binance_bot.py --mode simulate \
+  --plan "SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8" \
+  --plan "ETHBRL trigger=20000 amount=50 stop=money:1 activation=money:2 trail=pct:0.8"
 ```
 
-A unidade em dinheiro é convertida em distância de preço dividindo pela quantidade comprada (R$1 ÷ 0,0001 BTC =
-R$10.000 no preço). Os pares em BRL têm menos liquidez que os em USDT; em valores pequenos isso não costuma
-atrapalhar, mas o preço executado pode ficar um pouco pior.
+Leitura do primeiro plano: compra R$ 50 de S (par SUSDT, convertido pela cotação USDT/BRL) quando o preço atingir
+0,067; vende se perder R$ 1,00; ao atingir 0,071 passa a seguir a alta e vende quando recuar 0,8% a partir da máxima,
+nunca abaixo de 0,071. Se o recuo de 0,8% ficar abaixo de 0,071, a venda ocorre em 0,071.
+
+| Chave do plano | Unidades | Significado |
+|---|---|---|
+| `trigger` | preço | gatilho de compra |
+| `amount` | R$ | valor da compra em reais |
+| `stop` | `money:R$` · `pct:%` · `price:preço` | stop-loss abaixo do preço de compra |
+| `activation` | `price:preço` · `money:R$` · `pct:%` | mínimo para venda na alta (piso do trailing) |
+| `trail` | `pct:%` · `money:R$` | recuo a partir da máxima que dispara a venda |
+| `direction` | `auto` · `below` · `above` | `auto` compra quando o preço atinge o gatilho vindo de onde estiver |
+
+Os planos também podem vir de um JSON (`--config examples/plano_exemplo.json`, mesmo formato salvo pela página).
+
+Opções: `--no-sell-on-stop` (ao parar, mantém as posições), `--resume` (retoma posições salvas), `--yes` (sem
+confirmação no live), `--data-dir`, `--watchdog-seconds`, `--order-retry-seconds`.
 
 ### Testar a lógica sem rede (replay)
 
 ```bash
-python binance_bot.py --mode simulate --replay examples/replay_exemplo.csv \
-  --symbol BTCUSDT --buy-trigger 60000 --quote-amount 100 \
-  --stop-loss-pct 2 --profit-activation-pct 3 --trail-pct 1 \
-  --next ETHUSDT:3000 --next SOLUSDT:150
+python binance_bot.py --mode simulate --replay examples/replay_exemplo.csv --config examples/plano_exemplo.json
 ```
 
-O CSV tem uma linha `SIMBOLO,PRECO` por tick. No replay são usados filtros genéricos (sem consulta à Binance).
+O CSV tem uma linha `SIMBOLO,PRECO` por tick. Para pares em USDT inclua linhas `USDTBRL,<cotação>`. No replay são usados
+filtros genéricos, sem consulta à Binance.
 
-### Testnet
+### Testnet e live
 
-```bash
-python binance_bot.py --mode testnet --symbol BTCUSDT --buy-trigger 60000 --quote-amount 50 \
-  --stop-loss-pct 2 --profit-activation-pct 3 --trail-pct 1 --next ETHUSDT:3000
-```
-
-Envia ordens reais para a Spot Testnet (saldo fictício). Os preços da testnet podem divergir dos de produção.
+`--mode testnet` envia ordens reais à Spot Testnet (saldo fictício; preços podem divergir dos de produção).
+`--mode live` pede para digitar CONFIRMO e opera com dinheiro real. Teste nesta ordem: simulação, testnet, live com
+valores pequenos.
 
 ### Parar com segurança
 
-Ctrl+C (ou `SIGTERM`): o bot fecha o WebSocket, cancela qualquer ordem pendente dos símbolos envolvidos
-(nos modos testnet/live), vende a posição se `--sell-on-stop` foi passado, salva o estado e imprime um aviso
-com a posição que permanece aberta. Para retomar depois, rode o mesmo comando com `--resume`.
+Ctrl+C (ou `SIGTERM`): o bot fecha o WebSocket, cancela ordens pendentes dos símbolos (testnet/live), vende as
+posições abertas (padrão; `--no-sell-on-stop` mantém), salva o estado e lista o que ficou aberto. Para retomar depois,
+rode de novo com `--resume`.
 
 ## Arquivos gerados (`data/`)
 
-- `bot.log`: log completo (console e arquivo), com horário local.
-- `trades_<modo>.csv`: uma linha por ordem executada: horário UTC e local, símbolo, lado, motivo
-  (`gatilho`, `STOP_LOSS`, `TRAILING_STOP`, `STOP_MANUAL`), quantidade, preço médio, total, taxa, id da ordem e resultado da venda.
-- `state_<modo>.json`: estado atual para `--resume`.
+- `bot.log`: log completo, com horário local.
+- `trades_<modo>.csv`: uma linha por ordem executada: horário UTC e local, símbolo, lado, motivo (`gatilho`,
+  `STOP_LOSS`, `TRAILING_STOP`, `MINIMO_VENDA`, `STOP_MANUAL`), quantidade, preço médio, total na moeda de cotação,
+  cotação usada, total em R$, taxa, id da ordem e resultado da venda em R$ e %.
+- `state_<modo>.json`: posições e planos para `--resume`.
 
-## Como as ordens são executadas
+## Como as ordens e os níveis funcionam
 
-- Compra: ordem `MARKET` por valor em quote (`quoteOrderQty`). Preço de entrada = preço médio executado.
+- Compra: ordem `MARKET` por valor na moeda de cotação (`quoteOrderQty`), calculado a partir dos reais informados e da
+  cotação atual (ex.: USDTBRL). Preço de entrada = preço médio executado.
 - Venda: ordem `MARKET` pela quantidade líquida recebida (descontada a taxa paga no ativo), arredondada ao `stepSize`
-  da Binance e limitada ao saldo livre. São verificados `minQty` e `minNotional` antes de enviar.
-- Stop-loss e trailing são monitorados **pelo bot**, não são ordens na corretora. Se a máquina ou a rede caírem,
-  não há proteção até o bot voltar. Mantenha o processo rodando em máquina estável e use `--resume` ao reiniciar.
-- Falha de venda (rede, API): o bot registra o erro e tenta de novo a cada `--order-retry-seconds` até conseguir.
-  Falha de compra: até 3 tentativas, depois encerra com erro.
-- Se o recuo do trailing for maior ou igual ao lucro de ativação, o bot avisa: a venda pelo trailing pode sair abaixo
-  do preço de compra (o stop-loss continua como piso).
+  e limitada ao saldo livre. São verificados `minQty` e `minNotional` antes de enviar.
+- Regras em R$ são convertidas em distância de preço: R$ ÷ cotação ÷ quantidade comprada. A cotação usada é a do
+  momento da compra; o resultado em R$ de cada venda usa a cotação do momento da venda.
+- Trailing: arma quando o preço atinge o mínimo para venda; a partir daí o nível de venda é o maior entre
+  "máxima − recuo" e o mínimo. A venda só dispara depois de uma reversão (preço abaixo da máxima), nunca no instante em
+  que o mínimo é tocado. A ordem é a mercado: em quedas rápidas o preço executado pode ficar um pouco abaixo do nível.
+- Stop-loss e trailing são monitorados **pelo bot**, não são ordens na corretora. Se a máquina ou a rede caírem, não há
+  proteção até o bot voltar. Mantenha o processo rodando em máquina estável e use `--resume` ao reiniciar.
+- Falha de venda: registra e tenta de novo a cada `--order-retry-seconds` até conseguir. Falha de compra: até 3
+  tentativas, depois só aquela moeda é desativada; as outras continuam.
 
 ## Limitações realistas
 
-- Ordem a mercado: em movimentos bruscos o preço executado pode ficar pior que o nível do stop (slippage).
 - O gatilho é avaliado pelo último preço negociado (`@trade`). Em pares pouco líquidos pode haver intervalos sem trades;
   o watchdog consulta o preço via REST e reconecta se o stream ficar mudo por `--watchdog-seconds`.
+- Pares em BRL têm menos liquidez que os em USDT; em valores pequenos isso não costuma atrapalhar.
 - Este código não foi executado contra a Binance real durante o desenvolvimento (ambiente sem acesso à API).
-  Teste primeiro em `--mode simulate`, depois `--mode testnet`, e só então `--mode live` com valores pequenos.
 
 ## Testes
 
@@ -176,5 +136,6 @@ pip install -r requirements-dev.txt
 python -m pytest -q tests
 ```
 
-Os testes cobrem a página Sistema (iniciar, alimentar, parar e API HTTP) e gatilhos (auto/explícito), stop-loss, armar/subir trailing, venda na reversão, lista de moedas
-seguintes, repetição, taxas, falhas de ordem, salvar/retomar estado e o parse das respostas de ordem da Binance.
+Cobrem conversão de reais, níveis em R$/%/preço, piso do trailing, várias moedas em paralelo, recompra após venda,
+alimentar (incluir, atualizar, substituir, remover), falhas de ordem, salvar/retomar estado, parse das respostas da
+Binance, feed/loop e a página Sistema (iniciar, alimentar, parar e API HTTP).
