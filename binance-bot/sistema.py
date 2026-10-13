@@ -137,6 +137,7 @@ class BotRunner:
             if self.running:
                 raise ValueError("ja existe uma execucao em andamento; pare-a antes de iniciar outra")
             cfg = config_from_payload(payload, self.data_dir)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
             self.watchdog_seconds = max(10, int(payload.get("watchdog_seconds") or 90))
             exchange = self._exchange_factory(cfg, payload)
             self.queue = queue.Queue()
