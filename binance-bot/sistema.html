@@ -42,6 +42,7 @@
   input[type=text], input[type=number], select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   .rule { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 8px; }
+  .coin .rule { grid-template-columns: 1fr; }   /* dentro do cartao: valor em cima, unidade embaixo */
   .check { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; }
   .check input { margin-top: 4px; }
   .check .help { color: var(--muted); font-size: 12.5px; display: block; }
@@ -370,6 +371,7 @@
   }
   const fmtTime = iso => iso ? new Date(iso).toLocaleString('pt-BR') : '–';
   const brl = v => v == null || v === '' ? '–' : 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const px = v => { if (v == null || v === '') return '–'; const n = Number(v); if (!Number.isFinite(n)) return String(v); return String(Number(n.toPrecision(8))); };
 
   // ---------- iniciar
   $('#form-start').addEventListener('submit', async ev => {
@@ -438,12 +440,12 @@
   function coinCard(c) {
     const p = c.plan, r = p.rules, pos = c.position;
     const cls = c.phase === 'HOLDING' ? 'hold' : c.phase === 'ERROR' ? 'err' : 'warn';
-    let rows = `<dt>Preço</dt><dd>${c.price ?? '–'}</dd>
-      <dt>Gatilho</dt><dd>${p.trigger} · ${brl(p.amount_brl)} por compra${c.resolved ? (c.resolved === 'below' ? ' · compra quando ≤' : ' · compra quando ≥') : ''}</dd>
+    let rows = `<dt>Preço</dt><dd>${px(c.price)}</dd>
+      <dt>Gatilho</dt><dd>${px(p.trigger)} · ${brl(p.amount_brl)} por compra${c.resolved ? (c.resolved === 'below' ? ' · compra quando ≤' : ' · compra quando ≥') : ''}</dd>
       <dt>Regras</dt><dd>stop ${UNIT[r.stop.unit](r.stop.value)} · mínimo ${UNIT[r.activation.unit](r.activation.value)} · trailing ${UNIT[r.trail.unit](r.trail.value)}</dd>`;
     if (pos) {
-      rows += `<dt>Posição</dt><dd>qtd ${pos.qty} · entrada ${pos.entry_price} (${brl(pos.entry_brl)}) · agora ${brl(pos.value_brl)} (${pos.pnl_pct ?? '–'}%, ${brl(pos.pnl_brl)})</dd>
-        <dt>Níveis</dt><dd>stop-loss ${pos.stop_loss_price} · mínimo ${pos.activation_price} · ${pos.trailing_armed ? 'trailing armado em ' + pos.trailing_stop_price + ' (máx. ' + pos.highest + ')' : 'trailing arma ao atingir o mínimo'}</dd>`;
+      rows += `<dt>Posição</dt><dd>qtd ${pos.qty} · entrada ${px(pos.entry_price)} (${brl(pos.entry_brl)}) · agora ${brl(pos.value_brl)} (${pos.pnl_pct ?? '–'}%, ${brl(pos.pnl_brl)})</dd>
+        <dt>Níveis</dt><dd>stop-loss ${px(pos.stop_loss_price)} · mínimo ${px(pos.activation_price)} · ${pos.trailing_armed ? 'trailing armado em ' + px(pos.trailing_stop_price) + ' (máx. ' + px(pos.highest) + ')' : 'trailing arma ao atingir o mínimo'}</dd>`;
     }
     if (c.error) rows += `<dt>Erro</dt><dd>${c.error}</dd>`;
     return `<div class="coin-card"><div class="top"><b>${c.symbol}</b><span class="pill ${cls}">${PHASES[c.phase] || c.phase}</span></div><dl>${rows}</dl></div>`;
@@ -468,7 +470,7 @@
     $('#coins-status').innerHTML = b.coins.map(coinCard).join('');
     const open = b.coins.filter(c => c.position);
     $('#stop-positions').innerHTML = open.length
-      ? '<ul class="open-list">' + open.map(c => `<li>${c.symbol}: qtd ${c.position.qty}, entrada ${c.position.entry_price}, agora ${brl(c.position.value_brl)} (${brl(c.position.pnl_brl)})</li>`).join('') + '</ul>'
+      ? '<ul class="open-list">' + open.map(c => `<li>${c.symbol}: qtd ${c.position.qty}, entrada ${px(c.position.entry_price)}, agora ${brl(c.position.value_brl)} (${brl(c.position.pnl_brl)})</li>`).join('') + '</ul>'
       : 'Sem posições abertas no momento.';
   }
 
