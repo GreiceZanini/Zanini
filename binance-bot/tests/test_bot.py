@@ -1,5 +1,6 @@
 """Testes da logica de negociacao (varias moedas em paralelo), sem rede e sem a biblioteca python-binance."""
 import sys
+import time
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -414,3 +415,25 @@ def test_price_feed_parses_mini_ticker():
     feed._q = q
     feed._on_message({"stream": "ethbrl@miniTicker", "data": {"e": "24hrMiniTicker", "s": "ETHBRL", "o": "20000", "c": "20400"}})
     assert q.get_nowait() == ("ticker", "ETHBRL", D("20000"), D("20400"))
+
+
+def test_refresh_account_converts_balances_to_brl():
+    class AccountExchange(SimulatedExchange):
+        def account_balances(self):
+            return [{"asset": "USDT", "free": D("10"), "locked": D("0")}, {"asset": "BRL", "free": D("25.5"), "locked": D("0")},
+                    {"asset": "S", "free": D("100"), "locked": D("0")}, {"asset": "XYZ", "free": D("3"), "locked": D("0")}]
+        def all_prices(self):
+            return {"USDTBRL": D("5.6"), "SUSDT": D("0.07")}
+    cfg = BotConfig(mode="testnet", plans=[plan()])
+    bot = TradingBot(cfg, AccountExchange(filters_source=filters))
+    bot.prepare()                       # primeira leitura
+    acc = bot.account
+    assert acc["total_brl"] == "120.7"  # 10*5.6 + 25.5 + 100*0.07*5.6 = 56 + 25.5 + 39.2
+    assert acc["unknown"] == ["XYZ"] and acc["assets"][0]["asset"] == "USDT"
+    assert bot.snapshot()["account"]["total_brl"] == "120.7"
+    assert bot.refresh_account(now=time.time() + 10) is acc        # dentro do intervalo: nao consulta de novo
+
+
+def test_refresh_account_absent_in_simulation():
+    bot = make_bot()
+    assert bot.refresh_account(force=True) is None and bot.snapshot()["account"] is None

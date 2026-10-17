@@ -88,7 +88,19 @@
   .coin-card .top .pill { margin-left: auto; }
   .coin-card .expand { border: 1px solid var(--line); background: var(--tab-bg); color: var(--text); border-radius: 6px; width: 30px; height: 28px; cursor: pointer; font-size: 14px; }
   .coin-card .main { margin-top: 6px; font-size: 14px; }
-  .coin-card .main .sub { color: var(--muted); font-size: 13px; }
+  .kv { display: flex; gap: 16px; flex-wrap: wrap; }
+  .kv span { display: flex; flex-direction: column; min-width: 0; }
+  .kv small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .kv b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+  details.help { margin: 0 0 12px; font-size: 13.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 6px 12px; }
+  details.help summary { cursor: pointer; font-weight: 600; color: var(--text); font-size: 13.5px; }
+  details.help ul { margin: 6px 0 4px 18px; padding: 0; }
+  details.help p { margin: 6px 0; }
+  .field .help, .check .help { display: none; }
+  body.show-help .field .help, body.show-help .check .help { display: block; }
+  .coin-card .details dd b { font-weight: 600; }
   .coin-card .details { display: none; border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 4px; }
   .coin-card.open .details { display: block; }
   .coin-card .details dl { font-size: 13.5px; margin-top: 6px; }
@@ -122,7 +134,7 @@
     <!-- ================================================================ INICIAR -->
     <section id="tab-iniciar">
       <h2>Iniciar</h2>
-      <p class="intro">Informe cada moeda com seus próprios parâmetros. Valores em reais são convertidos pela cotação da moeda de cotação do par (ex.: USDT/BRL) no momento da compra.</p>
+      <details class="help"><summary>Ajuda</summary><p>Informe cada moeda com seus próprios parâmetros. Valores em reais são convertidos pela cotação da moeda de cotação do par (ex.: USDT/BRL) no momento da compra.</p><p><button type="button" class="btn small" data-toggle-help>Mostrar explicação de cada campo</button></p></details>
       <form id="form-start" autocomplete="off">
         <fieldset>
           <legend>Modo de execução</legend>
@@ -147,8 +159,7 @@
 
         <fieldset>
           <legend>Moedas</legend>
-          <p class="intro">Cada moeda tem gatilho de compra, valor em reais e regras de venda próprias. Adicione quantas quiser.</p>
-          <div id="coins-start"></div>
+                    <div id="coins-start"></div>
           <button type="button" class="btn small" data-add="coins-start">+ Adicionar moeda</button>
         </fieldset>
 
@@ -197,7 +208,7 @@
     <!-- ================================================================ ALIMENTAR -->
     <section id="tab-alimentar" hidden>
       <h2>Alimentar a execução em andamento</h2>
-      <p class="intro">Inclua moedas novas ou altere as existentes sem parar o bot. Em uma moeda com posição aberta, os níveis de stop, mínimo e trailing são recalculados.</p>
+      <details class="help"><summary>Ajuda</summary><p>Inclua moedas novas ou altere as existentes sem parar o bot. Em uma moeda com posição aberta, os níveis de stop, mínimo e trailing são recalculados.</p><p><button type="button" class="btn small" data-toggle-help>Mostrar explicação de cada campo</button></p></details>
       <form id="form-feed" autocomplete="off">
         <fieldset>
           <legend>Moedas para incluir ou atualizar</legend>
@@ -229,7 +240,7 @@
     <!-- ================================================================ PARAR -->
     <section id="tab-parar" hidden>
       <h2>Parar com segurança</h2>
-      <p class="intro">O bot fecha o WebSocket, cancela ordens pendentes dos símbolos envolvidos (testnet/live), salva o estado e encerra.</p>
+      <details class="help"><summary>Ajuda</summary><p>O bot fecha o WebSocket, cancela ordens pendentes dos símbolos envolvidos (testnet/live), salva o estado e encerra.</p></details>
       <form id="form-stop">
         <fieldset>
           <legend>Posições abertas</legend>
@@ -263,8 +274,21 @@
         <button type="button" data-period="15d" aria-pressed="false">15d</button>
       </div>
       <div class="change flat" id="w-change">–</div>
-      <div class="note" id="w-detail">capital alocado · realizado · em aberto</div>
+      <div class="stats" id="w-detail"></div>
     </div>
+    <div class="wallet" id="acct"><div class="value"><span id="a-value">–</span><small>saldo na Binance</small></div><div class="stats" id="a-assets"></div></div>
+    <details class="help"><summary>Explicações</summary>
+      <ul>
+        <li>Saldo na Binance: conta spot lida pela API (testnet/live), atualizada a cada minuto, com cada ativo convertido em reais pelo par em BRL ou em USDT. Em simulação não há conta.</li>
+        <li>Carteira = capital alocado (soma dos valores por compra) + resultado realizado + resultado das posições abertas.</li>
+        <li>Variação por período: compara com o valor da carteira há 1h, 4h, 1d ou 15d. O asterisco (*) indica histórico mais curto que o período: a comparação é desde o início.</li>
+        <li>Variação ao lado do preço de cada moeda: últimas 24 horas, como na Binance.</li>
+        <li>Em posição: mínimo de venda, valor atual da posição, resultado, stop e trailing (quando armado). Aguardando: gatilho, valor da compra e o que espera (cair ou subir até o gatilho). A seta abre os detalhes.</li>
+        <li>Trailing: arma ao atingir o mínimo; vende no recuo a partir da máxima, nunca abaixo do mínimo, e só depois de uma reversão.</li>
+        <li>Todas as moedas são observadas ao mesmo tempo; cada uma volta ao gatilho depois de vender, até você parar.</li>
+        <li>Log completo em data/bot.log; cada ordem em data/trades_&lt;modo&gt;.csv.</li>
+      </ul>
+    </details>
     <div class="warnbox" id="s-error" style="display:none"></div>
 
     <div class="coins-status" id="coins-status"></div>
@@ -277,9 +301,6 @@
   </aside>
 </main>
 
-<footer>
-  Iniciar, alimentar e parar o bot. Uso local: esta página fala com o <code>sistema.py</code> rodando nesta máquina. Todas as moedas são observadas ao mesmo tempo e cada uma volta a esperar o gatilho depois de vender, até você parar. A carteira é o capital alocado (soma dos valores por compra) mais o resultado realizado e o das posições abertas. A variação de cada moeda é a das últimas 24 horas, como na Binance. O log completo fica em <code>data/bot.log</code> e cada ordem em <code>data/trades_&lt;modo&gt;.csv</code>.
-</footer>
 
 <template id="coin-template">
   <div class="coin">
@@ -345,6 +366,12 @@
 (function () {
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // ---------- ajuda dos campos
+  function applyHelp(on) { document.body.classList.toggle('show-help', on); $$('[data-toggle-help]').forEach(b => b.textContent = on ? 'Ocultar explicação de cada campo' : 'Mostrar explicação de cada campo'); }
+  let helpOn = false; try { helpOn = localStorage.getItem('sistema.help') === '1'; } catch (e) {}
+  applyHelp(helpOn);
+  $$('[data-toggle-help]').forEach(b => b.addEventListener('click', () => { helpOn = !helpOn; try { localStorage.setItem('sistema.help', helpOn ? '1' : '0'); } catch (e) {} applyHelp(helpOn); }));
 
   // ---------- abas
   $$('.tabs button').forEach(btn => btn.addEventListener('click', () => {
@@ -488,19 +515,17 @@
     const chg = c.change_24h_pct;
     let main;
     if (pos) {
-      main = `Venda mínima em <b>${px(pos.activation_price)}</b> · posição <b>${brl(pos.value_brl)}</b> <span class="${cls(pos.pnl_brl)}">${brlSigned(pos.pnl_brl)} (${pct(pos.pnl_pct)})</span>` +
-             `<div class="sub">${pos.trailing_armed ? 'trailing armado: vende se recuar até ' + px(pos.trailing_stop_price) + ' (máxima ' + px(pos.highest) + ')' : 'ao atingir o mínimo, segue a alta e vende no recuo de ' + UNIT[r.trail.unit](r.trail.value)} · stop-loss em ${px(pos.stop_loss_price)}</div>`;
+      main = `<div class="kv"><span><small>Venda mín.</small><b>${px(pos.activation_price)}</b></span><span><small>Posição</small><b>${brl(pos.value_brl)}</b></span><span><small>Resultado</small><b class="${cls(pos.pnl_brl)}">${brlSigned(pos.pnl_brl)} (${pct(pos.pnl_pct)})</b></span><span><small>Stop</small><b>${px(pos.stop_loss_price)}</b></span>${pos.trailing_armed ? `<span><small>Trailing</small><b>${px(pos.trailing_stop_price)}</b></span>` : ''}</div>`;
     } else {
-      main = `Compra em <b>${px(p.trigger)}</b> · <b>${brl(p.amount_brl)}</b>` +
-             `<div class="sub">${c.resolved === 'below' ? 'aguardando o preço cair até o gatilho' : c.resolved === 'above' ? 'aguardando o preço subir até o gatilho' : 'aguardando o primeiro preço'}${c.error ? ' · ' + c.error : ''}</div>`;
+      main = `<div class="kv"><span><small>Compra em</small><b>${px(p.trigger)}</b></span><span><small>Valor</small><b>${brl(p.amount_brl)}</b></span><span><small>Espera</small><b>${c.resolved === 'below' ? 'cair até o gatilho' : c.resolved === 'above' ? 'subir até o gatilho' : '1º preço'}</b></span>${c.error ? `<span><small>Erro</small><b class="down">${c.error}</b></span>` : ''}</div>`;
     }
-    let det = `<dt>Gatilho de compra</dt><dd>${px(p.trigger)} · ${brl(p.amount_brl)} por compra · direção ${p.direction}</dd>
-      <dt>Stop-loss</dt><dd>${UNIT[r.stop.unit](r.stop.value)}${pos ? ' · nível ' + px(pos.stop_loss_price) + ' (' + pct(pos.stop_pct) + ' da compra)' : ''}</dd>
-      <dt>Mínimo para venda</dt><dd>${UNIT[r.activation.unit](r.activation.value)}${pos ? ' · nível ' + px(pos.activation_price) + ' (' + pct(pos.activation_pct) + ' da compra)' : ''}</dd>
-      <dt>Recuo do trailing</dt><dd>${UNIT[r.trail.unit](r.trail.value)} a partir da máxima, nunca abaixo do mínimo${pos && pos.trailing_armed ? ' · armado em ' + px(pos.trailing_stop_price) + ' (' + pct(pos.trailing_pct_from_high) + ' da máxima ' + px(pos.highest) + ')' : ''}</dd>`;
-    if (pos) det += `<dt>Compra</dt><dd>${px(pos.entry_price)} · qtd ${pos.qty} · ${brl(pos.entry_brl)} · cotação ${pos.rate} · ${fmtTime(pos.entry_time)}</dd>`;
-    det += `<dt>Ordens desde o início</dt><dd>${c.trades}</dd>
-      <dt>Resultado realizado</dt><dd class="${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}${c.realized_pct != null ? ' (' + pct(c.realized_pct) + ' do valor comprado)' : ''}</dd>`;
+    let det = `<dt>Gatilho</dt><dd><b>${px(p.trigger)}</b> · <b>${brl(p.amount_brl)}</b> · ${p.direction}</dd>
+      <dt>Stop-loss</dt><dd><b>${UNIT[r.stop.unit](r.stop.value)}</b>${pos ? ' → <b>' + px(pos.stop_loss_price) + '</b> (' + pct(pos.stop_pct) + ')' : ''}</dd>
+      <dt>Mínimo</dt><dd><b>${UNIT[r.activation.unit](r.activation.value)}</b>${pos ? ' → <b>' + px(pos.activation_price) + '</b> (' + pct(pos.activation_pct) + ')' : ''}</dd>
+      <dt>Trailing</dt><dd><b>${UNIT[r.trail.unit](r.trail.value)}</b> da máxima · piso: mínimo${pos && pos.trailing_armed ? ' · armado <b>' + px(pos.trailing_stop_price) + '</b> (' + pct(pos.trailing_pct_from_high) + ' da máx. ' + px(pos.highest) + ')' : pos ? ' · não armado' : ''}</dd>`;
+    if (pos) det += `<dt>Compra</dt><dd><b>${px(pos.entry_price)}</b> · <b>${pos.qty}</b> un · <b>${brl(pos.entry_brl)}</b> · cotação <b>${pos.rate}</b> · ${fmtTime(pos.entry_time)}</dd>`;
+    det += `<dt>Ordens</dt><dd><b>${c.trades}</b></dd>
+      <dt>Realizado</dt><dd><b class="${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}</b>${c.realized_pct != null ? ' (' + pct(c.realized_pct) + ')' : ''}</dd>`;
     return `<div class="coin-card ${holding ? 'holding' : ''} ${openCards.has(c.symbol) ? 'open' : ''}" data-sym="${c.symbol}">
       <div class="top"><b>${c.symbol}</b><span class="price">${px(c.price)}<span class="chg ${cls(chg)}">${chg == null ? '' : pct(chg) + ' 24h'}</span></span>
         <span class="pill ${pillCls}">${PHASES[c.phase] || c.phase}</span><button type="button" class="expand" title="Mais detalhes" aria-label="Mais detalhes de ${c.symbol}">${openCards.has(c.symbol) ? '▴' : '▾'}</button></div>
@@ -531,17 +556,21 @@
     err.style.display = errText ? '' : 'none'; err.textContent = errText || '';
     $$('#w-periods button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.period === period)));
     if (!b) { $('#s-mode').textContent = '–'; $('#s-rates').textContent = '–'; $('#w-value').textContent = '–'; $('#w-change').textContent = '–'; $('#w-change').className = 'change flat';
-              $('#w-detail').textContent = 'capital alocado · realizado · em aberto'; $('#coins-status').innerHTML = ''; $('#balances tbody').innerHTML = '';
+              $('#w-detail').innerHTML = ''; $('#a-value').textContent = '–'; $('#a-assets').innerHTML = ''; $('#coins-status').innerHTML = ''; $('#balances tbody').innerHTML = '';
               $('#stop-positions').textContent = 'Sem posições abertas no momento.'; return; }
     $('#s-mode').textContent = { simulate: 'Simulação', testnet: 'Testnet', live: 'LIVE (dinheiro real)' }[b.mode] || b.mode;
     $('#s-rates').textContent = Object.entries(b.rates).filter(([k]) => k !== 'BRL').map(([k, v]) => `${k}/BRL ${px(v)}`).join(' · ') || 'pares em BRL';
+    const a = b.account;
+    if (!a) { $('#a-value').textContent = b.mode === 'simulate' ? 'sem conta' : '–'; $('#a-assets').innerHTML = b.mode === 'simulate' ? '<span>simulação: não há conta Binance</span>' : '<span>aguardando leitura da conta</span>'; }
+    else if (a.error) { $('#a-value').textContent = '–'; $('#a-assets').innerHTML = `<span class="down">${a.error}</span>`; }
+    else { $('#a-value').textContent = brl(a.total_brl); $('#a-assets').innerHTML = a.assets.map(x => `<span>${x.asset} <b>${x.value_brl != null ? brl(x.value_brl) : px(Number(x.free) + Number(x.locked)) + ' un'}</b></span>`).join('') + `<span>atualizado <b>${new Date(a.updated_at * 1000).toLocaleTimeString('pt-BR')}</b></span>`; }
     const w = b.wallet || {};
     $('#w-value').textContent = brl(w.value);
     const ch = (w.changes || {})[period] || {};
     const wc = $('#w-change');
     wc.className = 'change ' + cls(ch.pct);
-    wc.textContent = ch.pct == null ? 'sem histórico ainda' : `${brlSigned(ch.brl)} (${pct(ch.pct)}) em ${period}${ch.since_start ? ' · desde o início (histórico mais curto que o período)' : ''}`;
-    $('#w-detail').textContent = `capital alocado ${brl(w.allocated)} · realizado ${brlSigned(w.realized)} em ${b.sales} venda${b.sales === 1 ? '' : 's'} · em aberto ${brlSigned(w.unrealized)} (${b.open_positions} posição(ões))`;
+    wc.textContent = ch.pct == null ? '–' : `${brlSigned(ch.brl)} (${pct(ch.pct)})${ch.since_start ? ' *' : ''}`;
+    $('#w-detail').innerHTML = `<span>Alocado <b>${brl(w.allocated)}</b></span><span>Realizado <b class="${cls(w.realized)}">${brlSigned(w.realized)}</b></span><span>Aberto <b class="${cls(w.unrealized)}">${brlSigned(w.unrealized)}</b></span><span>Vendas <b>${b.sales}</b></span><span>Posições <b>${b.open_positions}</b></span>`;
     $('#coins-status').innerHTML = b.coins.map(coinCard).join('');
     bindCards();
     const total = Number(w.value) || 0;

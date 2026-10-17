@@ -44,6 +44,7 @@ DEFAULT_STEP = Decimal("0.00000001")
 LEVEL_PRECISION = Decimal("1e-12")   # arredondamento dos niveis calculados (stop, minimo, trailing)
 PERIODS = {"1h": 3600, "4h": 4 * 3600, "1d": 86400, "15d": 15 * 86400}   # variacao da carteira por periodo
 EQUITY_SAMPLE_SECONDS = 60
+ACCOUNT_REFRESH_SECONDS = 60     # consulta do saldo real da conta Binance (testnet/live)
 BRL = "BRL"
 KNOWN_QUOTES = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "BRL", "EUR", "TRY")
 
@@ -423,6 +424,18 @@ class BinanceExchange:
         bal = self.client.get_asset_balance(asset=asset)
         return to_dec(bal["free"]) if bal else ZERO
 
+    def account_balances(self) -> List[dict]:
+        """Saldos da conta spot com quantidade > 0: [{asset, free, locked}]."""
+        out = []
+        for b in self.client.get_account().get("balances", []):
+            free, locked = to_dec(b.get("free", "0")), to_dec(b.get("locked", "0"))
+            if free + locked > ZERO:
+                out.append({"asset": b["asset"], "free": free, "locked": locked})
+        return out
+
+    def all_prices(self) -> Dict[str, Decimal]:
+        return {t["symbol"]: to_dec(t["price"]) for t in self.client.get_all_tickers()}
+
     def market_buy_quote(self, filters: SymbolFilters, quote_amount: Decimal) -> Fill:
         resp = self.client.create_order(symbol=filters.symbol, side="BUY", type="MARKET",
                                         quoteOrderQty=dec_str(quote_amount), newOrderRespType="FULL")
@@ -474,6 +487,12 @@ class SimulatedExchange:
 
     def free_balance(self, asset: str) -> Decimal:
         return Decimal("1e12")
+
+    def account_balances(self) -> List[dict]:
+        return []          # simulacao nao tem conta
+
+    def all_prices(self) -> Dict[str, Decimal]:
+        return dict(self.prices)
 
     def _next_id(self) -> str:
         self._order_seq += 1
@@ -577,6 +596,8 @@ class TradingBot:
         self.equity_history: List[tuple] = []     # (timestamp, valor da carteira em R$)
         self._last_equity_sample = 0.0
         self.equity_file: Optional[Path] = (cfg.state_file.parent / f"equity_{cfg.mode}.csv") if cfg.state_file else None
+        self.account: Optional[dict] = None       # saldo real da conta Binance (testnet/live)
+        self._last_account_refresh = 0.0
 
     # -- preparacao -------------------------------------------------------------
     def rate_symbols(self) -> List[str]:
@@ -613,6 +634,7 @@ class TradingBot:
             self.slots[plan.symbol] = Slot(plan=plan)
             log.info("plano: %s", plan.describe())
         self._load_equity_history()
+        self.refresh_account(force=True)
         self.on_symbols_changed(self.watched_symbols())
 
     # -- conversao de moeda ------------------------------------------------------------
@@ -691,6 +713,50 @@ class TradingBot:
             slot.day_open = day_open
             if last is not None and slot.last_price is None:
                 slot.last_price = last
+
+    # -- conta Binance (saldo real) ------------------------------------------------------
+    def refresh_account(self, now: Optional[float] = None, force: bool = False) -> Optional[dict]:
+        """Le os saldos da conta e converte cada ativo em reais (par <ATIVO>BRL ou <ATIVO>USDT x USDTBRL)."""
+        now = time.time() if now is None else now
+        if self.cfg.mode == "simulate":
+            return None
+        if not force and now - self._last_account_refresh < ACCOUNT_REFRESH_SECONDS:
+            return self.account
+        self._last_account_refresh = now
+        try:
+            balances = self.ex.account_balances()
+            prices = self.ex.all_prices()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nao foi possivel ler o saldo da conta Binance: %s", exc)
+            self.account = {"updated_at": now, "error": str(exc), "assets": [], "total_brl": None}
+            return self.account
+        usdt_brl = prices.get("USDTBRL")
+        assets, total, unknown = [], ZERO, []
+        for b in balances:
+            asset, qty = b["asset"], b["free"] + b["locked"]
+            price_brl = None
+            if asset == BRL:
+                price_brl = ONE
+            elif f"{asset}{BRL}" in prices:
+                price_brl = prices[f"{asset}{BRL}"]
+            elif usdt_brl and f"{asset}USDT" in prices:
+                price_brl = prices[f"{asset}USDT"] * usdt_brl
+            elif asset == "USDT" and usdt_brl:
+                price_brl = usdt_brl
+            value = (qty * price_brl).quantize(Decimal("0.01")) if price_brl is not None else None
+            if value is not None:
+                total += value
+            else:
+                unknown.append(asset)
+            assets.append({"asset": asset, "free": dec_str(b["free"]), "locked": dec_str(b["locked"]),
+                           "price_brl": dec_str(price_brl) if price_brl is not None else None,
+                           "value_brl": dec_str(value) if value is not None else None})
+        assets.sort(key=lambda a: -(to_dec(a["value_brl"]) if a["value_brl"] else ZERO))
+        self.account = {"updated_at": now, "error": None, "assets": assets, "total_brl": dec_str(total),
+                        "unknown": unknown, "usdt_brl": dec_str(usdt_brl) if usdt_brl else None}
+        log.info("saldo Binance: %s em %d ativo(s)%s", brl_str(total), len(assets),
+                 f" (sem cotacao em R$: {', '.join(unknown)})" if unknown else "")
+        return self.account
 
     # -- carteira ---------------------------------------------------------------------
     def allocated_brl(self) -> Decimal:
@@ -995,6 +1061,7 @@ class TradingBot:
                 "realized_brl": dec_str(self.realized_brl.quantize(q2)), "sales": self.sales,
                 "open_positions": len(self.open_positions()), "error": self.error_message,
                 "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc).isoformat(),
+                "account": self.account,
                 "wallet": {"value": dec_str(wallet_value), "allocated": dec_str(self.allocated_brl().quantize(q2)),
                            "realized": dec_str(self.realized_brl.quantize(q2)),
                            "unrealized": dec_str(self.unrealized_brl().quantize(q2)),
@@ -1333,6 +1400,7 @@ def run_live_loop(bot: TradingBot, feed: PriceFeed, q: "queue.Queue", args, stop
         if now - last_status >= args.status_seconds:
             log.info(bot.status_line())
             last_status = now
+        bot.refresh_account(now)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

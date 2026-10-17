@@ -46,9 +46,11 @@ python sistema.py            # abre http://127.0.0.1:8080
 - Alimentar: com o bot rodando, inclui ou atualiza moedas (níveis das posições abertas são recalculados), substitui a
   lista ou remove moedas sem posição aberta.
 - Parar: mostra as posições abertas e para com segurança, vendendo ou não as posições.
-- Ao lado: carteira (capital alocado + realizado + posições abertas) com variação por período (1h, 4h, 1d, 15d),
+- Ao lado: saldo real da conta Binance em R$ (testnet/live, lido pela API a cada minuto, cada ativo convertido pelo par
+  em BRL ou em USDT), carteira (capital alocado + realizado + posições abertas) com variação por período (1h, 4h, 1d, 15d),
   moedas em posição primeiro, cada uma com preço e variação de 24h, gatilho ou venda mínima, detalhes ao passar o
   mouse na seta (compra, níveis, ordens e resultado), tabela de saldos por moeda e log (completo em `/api/log`).
+  Só números ficam à vista; as frases explicativas ficam em quadros "Explicações" e "Ajuda" que abrem sob demanda.
 
 O servidor escuta só em 127.0.0.1 e não tem autenticação; não exponha na rede.
 
