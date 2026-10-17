@@ -4,8 +4,9 @@ Automação de compra e venda **spot** na Binance em Python, com várias moedas 
 
 - preço de gatilho da compra e valor da compra **em reais** (convertido pela cotação da moeda de cotação do par,
   ex.: USDT/BRL, no momento da compra);
-- na queda, **stop-loss**: em R$ (perda máxima na operação), em % ou em preço;
-- na alta, **mínimo para venda**: um preço de venda (ex.: 0,071) ou um lucro mínimo em R$ (ex.: R$ 2,00), ou %;
+- na queda, **stop-loss**: perda máxima em R$, em %, ou o valor total da posição em R$ (ex.: vender se valer R$ 48,50);
+- na alta, **mínimo para venda**: um preço de venda (ex.: 0,071), um lucro mínimo em R$ (ex.: R$ 2,00), um valor total da
+  posição em R$ (ex.: R$ 52,00) ou %;
 - **trailing**: recuo a partir da máxima (em % ou R$) que dispara a venda, nunca abaixo do mínimo para venda.
 
 Todas as moedas são observadas ao mesmo tempo; pode haver várias posições abertas em paralelo. Depois de vender, a
@@ -69,8 +70,8 @@ nunca abaixo de 0,071. Se o recuo de 0,8% ficar abaixo de 0,071, a venda ocorre 
 |---|---|---|
 | `trigger` | preço | gatilho de compra |
 | `amount` | R$ | valor da compra em reais |
-| `stop` | `money:R$` · `pct:%` · `price:preço` | stop-loss abaixo do preço de compra |
-| `activation` | `price:preço` · `money:R$` · `pct:%` | mínimo para venda na alta (piso do trailing) |
+| `stop` | `money:R$` · `pct:%` · `total:R$` | perda máxima em R$ ou %, ou valor total da posição em R$ |
+| `activation` | `price:preço` · `money:R$` · `total:R$` · `pct:%` | mínimo para venda na alta (piso do trailing) |
 | `trail` | `pct:%` · `money:R$` | recuo a partir da máxima que dispara a venda |
 | `direction` | `auto` · `below` · `above` | `auto` compra quando o preço atinge o gatilho vindo de onde estiver |
 
@@ -120,8 +121,9 @@ rode de novo com `--resume`.
 - Trailing: arma quando o preço atinge o mínimo para venda; a partir daí o nível de venda é o maior entre
   "máxima − recuo" e o mínimo. A venda só dispara depois de uma reversão (preço abaixo da máxima), nunca no instante em
   que o mínimo é tocado. A ordem é a mercado: em quedas rápidas o preço executado pode ficar um pouco abaixo do nível.
-- Stop-loss em preço precisa ficar abaixo do gatilho e mínimo em preço acima dele; o bot recusa o plano caso contrário
-  (um stop acima do preço de compra venderia no mesmo instante e recompraria em seguida, sem parar).
+- Stop em valor total (ou perda máxima) precisa ficar abaixo do valor da compra; mínimo em preço precisa ficar acima do
+  gatilho e mínimo em valor total acima do valor da compra. O bot recusa o plano caso contrário (um stop acima do
+  preço de compra venderia no mesmo instante e recompraria em seguida, sem parar).
 - Stop-loss e trailing são monitorados **pelo bot**, não são ordens na corretora. Se a máquina ou a rede caírem, não há
   proteção até o bot voltar. Mantenha o processo rodando em máquina estável e use `--resume` ao reiniciar.
 - Falha de venda: registra e tenta de novo a cada `--order-retry-seconds` até conseguir. Falha de compra: até 3

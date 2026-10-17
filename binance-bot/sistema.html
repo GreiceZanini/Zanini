@@ -313,18 +313,18 @@
       </label>
       <label class="field">
         <span class="name">Na queda: stop-loss</span>
-        <span class="help">Quanto aceita perder. Ex.: R$ 1,00 na operação, ou 2%, ou um preço (abaixo do gatilho).</span>
+        <span class="help">Sobre o valor total da compra. Ex.: perder no máximo R$ 1,00; ou 2%; ou vender quando a posição valer R$ 48,50 no total.</span>
         <div class="rule">
           <input type="text" data-k="stop_value" inputmode="decimal" placeholder="1">
-          <select data-k="stop_unit"><option value="money">R$ na operação</option><option value="pct">%</option><option value="price">preço</option></select>
+          <select data-k="stop_unit"><option value="money">perda máxima em R$</option><option value="pct">perda máxima em %</option><option value="total">valor total em R$</option></select>
         </div>
       </label>
       <label class="field">
         <span class="name">Na alta: mínimo para venda</span>
-        <span class="help">Escolha uma opção por moeda: preço de venda (ex.: 0,071, acima do gatilho) ou lucro mínimo em R$ (ex.: 2,00). Ao atingir, o bot não vende: passa a seguir a alta.</span>
+        <span class="help">Escolha uma opção por moeda: preço de venda da moeda (ex.: 0,071, acima do gatilho), lucro mínimo em R$ (ex.: 2,00) ou valor total da posição em R$ (ex.: 52,00). Ao atingir, o bot não vende: passa a seguir a alta.</span>
         <div class="rule">
           <input type="text" data-k="activation_value" inputmode="decimal" placeholder="0,071">
-          <select data-k="activation_unit"><option value="price">preço de venda</option><option value="money">lucro em R$</option><option value="pct">lucro em %</option></select>
+          <select data-k="activation_unit"><option value="price">preço de venda</option><option value="money">lucro em R$</option><option value="total">valor total em R$</option><option value="pct">lucro em %</option></select>
         </div>
       </label>
     </div>
@@ -413,7 +413,7 @@
   const pct = v => v == null || v === '' ? '–' : (Number(v) > 0 ? '+' : '') + Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + '%';
   const px = v => { if (v == null || v === '') return '–'; const n = Number(v); if (!Number.isFinite(n)) return String(v); return String(Number(n.toPrecision(8))).replace('.', ','); };
   const cls = v => v == null ? 'flat' : Number(v) > 0 ? 'up' : Number(v) < 0 ? 'down' : 'flat';
-  const UNIT = { money: v => brl(v), pct: v => pct(v).replace('+', ''), price: v => 'preço ' + px(v) };
+  const UNIT = { money: v => brl(v), pct: v => pct(v).replace('+', ''), price: v => 'preço ' + px(v), total: v => 'total ' + brl(v) };
 
   // ---------- iniciar
   $('#form-start').addEventListener('submit', async ev => {

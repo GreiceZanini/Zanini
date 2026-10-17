@@ -170,8 +170,9 @@ class OrderError(Exception):
 class Rule:
     """Uma regra com unidade e valor. Unidades:
     pct   -> percentual (do preco de compra; no trailing, da maxima)
-    money -> valor em REAIS sobre a operacao inteira
-    price -> preco (nivel absoluto no stop e no minimo de venda)
+    money -> perda maxima / lucro minimo em REAIS sobre a operacao inteira
+    total -> valor TOTAL da posicao em REAIS (ex.: comprou R$50, stop quando valer R$48,50)
+    price -> preco unitario da moeda (apenas no minimo de venda, ex.: vender a partir de 0,071)
     """
     unit: str
     value: Decimal
@@ -198,7 +199,7 @@ class ExitRules:
     trail: Rule         # pct | money           (recuo a partir da maxima)
 
     def validate(self) -> None:
-        allowed = {"stop": ("pct", "money", "price"), "activation": ("pct", "money", "price"), "trail": ("pct", "money")}
+        allowed = {"stop": ("pct", "money", "total"), "activation": ("pct", "money", "price", "total"), "trail": ("pct", "money")}
         names = {"stop": "stop-loss", "activation": "minimo para venda na alta", "trail": "recuo do trailing"}
         for key, units in allowed.items():
             r = getattr(self, key)
@@ -211,7 +212,8 @@ class ExitRules:
 
     def describe(self) -> str:
         def one(r: Rule) -> str:
-            return {"pct": f"{dec_str(r.value)}%", "money": brl_str(r.value), "price": f"preco {dec_str(r.value)}"}[r.unit]
+            return {"pct": f"{dec_str(r.value)}%", "money": brl_str(r.value), "price": f"preco {dec_str(r.value)}",
+                    "total": f"total {brl_str(r.value)}"}[r.unit]
         return f"stop={one(self.stop)} minimo-venda={one(self.activation)} trailing={one(self.trail)}"
 
     def to_dict(self) -> dict:
@@ -241,12 +243,18 @@ class CoinPlan:
         if self.direction not in ("auto", "below", "above"):
             raise ValueError(f"{self.symbol}: direcao deve ser auto, below ou above")
         self.rules.validate()
-        if self.rules.stop.unit == "price" and self.rules.stop.value >= self.trigger:
-            raise ValueError(f"{self.symbol}: stop-loss em preco ({dec_str(self.rules.stop.value)}) precisa ficar ABAIXO do "
-                             f"gatilho de compra ({dec_str(self.trigger)}); se queria percentual, use a unidade %")
+        if self.rules.stop.unit == "total" and self.rules.stop.value >= self.amount_brl:
+            raise ValueError(f"{self.symbol}: stop-loss em valor total ({brl_str(self.rules.stop.value)}) precisa ficar ABAIXO do "
+                             f"valor da compra ({brl_str(self.amount_brl)}); para perda maxima use 'R$ na operacao'")
+        if self.rules.stop.unit == "money" and self.rules.stop.value >= self.amount_brl:
+            raise ValueError(f"{self.symbol}: perda maxima ({brl_str(self.rules.stop.value)}) nao pode ser maior ou igual ao "
+                             f"valor da compra ({brl_str(self.amount_brl)})")
         if self.rules.activation.unit == "price" and self.rules.activation.value <= self.trigger:
             raise ValueError(f"{self.symbol}: minimo para venda em preco ({dec_str(self.rules.activation.value)}) precisa ficar "
                              f"ACIMA do gatilho de compra ({dec_str(self.trigger)})")
+        if self.rules.activation.unit == "total" and self.rules.activation.value <= self.amount_brl:
+            raise ValueError(f"{self.symbol}: minimo para venda em valor total ({brl_str(self.rules.activation.value)}) precisa "
+                             f"ficar ACIMA do valor da compra ({brl_str(self.amount_brl)})")
 
     def describe(self) -> str:
         return (f"{self.symbol} gatilho={dec_str(self.trigger)} compra={brl_str(self.amount_brl)} "
@@ -624,6 +632,8 @@ class TradingBot:
             return rule.value
         if rule.unit == "pct":
             level = entry * (1 - rule.value / 100) if below else entry * (1 + rule.value / 100)
+        elif rule.unit == "total":
+            level = (rule.value / rate) / qty          # valor total da posicao em R$ -> preco unitario
         else:
             dist = (rule.value / rate) / qty           # R$ -> quote -> por unidade
             level = entry - dist if below else entry + dist
@@ -1163,7 +1173,7 @@ class PriceFeed:
 # --------------------------------------------------------------------------- CLI
 PLAN_HELP = ('plano de uma moeda, entre aspas, repita para varias: "SIMBOLO trigger=PRECO amount=REAIS '
              'stop=UNIDADE:VALOR activation=UNIDADE:VALOR trail=UNIDADE:VALOR [direction=auto|below|above]". '
-             'Unidades: money (R$ na operacao), pct (%%), price (preco). '
+             'Unidades: money (R$ na operacao), pct (%%), total (valor total da posicao em R$), price (so no minimo de venda). '
              'Ex.: "SUSDT trigger=0.067 amount=50 stop=money:1 activation=price:0.071 trail=pct:0.8"')
 
 

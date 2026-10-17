@@ -348,11 +348,28 @@ def test_run_live_loop_with_fake_feed():
 
 # ----------------------------------------------------------------------------- validacao de precos, carteira e estatisticas
 def test_price_rules_must_be_consistent_with_trigger():
-    with pytest.raises(ValueError, match="ABAIXO"):
+    with pytest.raises(ValueError, match="unidade"):                      # stop em preco unitario nao existe mais
         plan(symbol="TIAUSDT", trigger="0.737", r=rules(("price", "1.5"), ("price", "0.755"), ("pct", "0.8"))).validate()
+    with pytest.raises(ValueError, match="ABAIXO"):                       # stop em valor total acima da compra
+        plan(symbol="TIAUSDT", trigger="0.737", r=rules(("total", "60"), ("price", "0.755"), ("pct", "0.8"))).validate()
+    with pytest.raises(ValueError, match="nao pode ser maior"):
+        plan(symbol="TIAUSDT", trigger="0.737", r=rules(("money", "50"), ("price", "0.755"), ("pct", "0.8"))).validate()
     with pytest.raises(ValueError, match="ACIMA"):
         plan(symbol="TIAUSDT", trigger="0.737", r=rules(("money", "1"), ("price", "0.70"), ("pct", "0.8"))).validate()
-    plan(symbol="TIAUSDT", trigger="0.737", r=rules(("price", "0.72"), ("price", "0.755"), ("pct", "0.8"))).validate()
+    with pytest.raises(ValueError, match="ACIMA"):
+        plan(symbol="TIAUSDT", trigger="0.737", r=rules(("money", "1"), ("total", "40"), ("pct", "0.8"))).validate()
+    plan(symbol="TIAUSDT", trigger="0.737", r=rules(("total", "48.5"), ("total", "52"), ("pct", "0.8"))).validate()
+
+
+def test_total_value_levels():
+    """Comprou R$50: stop quando a posicao valer R$48,50; minimo quando valer R$52."""
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("total", "48.5"), ("total", "52"), ("pct", "0.5")))])
+    bot.handle_price("ETHBRL", D("20000"))
+    pos = bot.slots["ETHBRL"].position
+    assert pos.qty * pos.stop_loss_price == D("48.5")
+    assert pos.qty * pos.activation_price == D("52")
+    bot.handle_price("ETHBRL", pos.stop_loss_price)
+    assert bot.slots["ETHBRL"].phase == SlotPhase.WAITING and abs(bot.realized_brl - D("-1.5")) < D("0.0001")
 
 
 def test_wallet_value_history_and_per_coin_stats(tmp_path):
