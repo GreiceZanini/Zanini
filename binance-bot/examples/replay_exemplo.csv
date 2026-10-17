@@ -1,0 +1,19 @@
+# SIMBOLO,PRECO  (uma linha por tick). Para pares em USDT, informe a cotacao USDTBRL antes.
+# Use com: --mode simulate --replay examples/replay_exemplo.csv --config examples/plano_exemplo.json
+USDTBRL,5.60
+SUSDT,0.0690
+ETHBRL,20500
+SUSDT,0.0680
+SUSDT,0.0670
+SUSDT,0.0700
+SUSDT,0.0710
+SUSDT,0.0712
+SUSDT,0.0709
+ETHBRL,20000
+ETHBRL,20150
+ETHBRL,20300
+ETHBRL,20200
+SUSDT,0.0700
+SUSDT,0.0670
+SUSDT,0.0665
+SUSDT,0.0660

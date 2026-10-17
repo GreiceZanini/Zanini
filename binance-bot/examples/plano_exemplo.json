@@ -1,0 +1,8 @@
+{
+  "plans": [
+    {"symbol": "SUSDT", "trigger": "0.067", "amount_brl": "50", "direction": "auto",
+     "rules": {"stop": {"unit": "money", "value": "1"}, "activation": {"unit": "price", "value": "0.071"}, "trail": {"unit": "pct", "value": "0.8"}}},
+    {"symbol": "ETHBRL", "trigger": "20000", "amount_brl": "50", "direction": "auto",
+     "rules": {"stop": {"unit": "money", "value": "1"}, "activation": {"unit": "money", "value": "0.5"}, "trail": {"unit": "pct", "value": "0.5"}}}
+  ]
+}

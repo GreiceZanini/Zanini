@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema · Bot Binance</title>
+<style>
+  :root {
+    --bg: #f3f5f8; --panel: #ffffff; --text: #18222e; --muted: #5a6878; --line: #d6dde6;
+    --accent: #0b63c7; --accent-text: #ffffff; --ok: #18824a; --warn: #a66b12; --danger: #bf3a3a;
+    --code-bg: #101822; --code-text: #d5dee8; --tab-bg: #e6ebf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e131a; --panel: #161d26; --text: #e4eaf1; --muted: #98a5b4; --line: #293441;
+      --accent: #5aa2f2; --accent-text: #0b1016; --ok: #45c47c; --warn: #e3aa4c; --danger: #f07070;
+      --code-bg: #0a0f15; --code-text: #cfd8e3; --tab-bg: #1e2833; color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 20px; }
+  main { max-width: 1240px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 1000px) { main { grid-template-columns: 1.05fr 0.95fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tabs button { background: var(--tab-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  section[hidden] { display: none; }
+  h2 { font-size: 17px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 0; }
+  .intro { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px 6px; margin: 0 0 14px; min-width: 0; }
+  legend { font-weight: 600; padding: 0 6px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 640px) { .grid.two { grid-template-columns: 1fr 1fr; } .grid.three { grid-template-columns: 1fr 1fr 1fr; } }
+  label.field { display: block; margin-bottom: 10px; min-width: 0; }
+  label.field > span.name { display: block; font-weight: 600; font-size: 14px; }
+  label.field > span.help { display: block; color: var(--muted); font-size: 12.5px; margin: 2px 0 5px; }
+  input[type=text], input[type=number], select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .rule { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 8px; }
+  .coin .rule { grid-template-columns: 1fr; }
+  .check { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; }
+  .check input { margin-top: 4px; }
+  .check .help { color: var(--muted); font-size: 12.5px; display: block; }
+  .coin { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
+  .coin-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .coin-head h3 { color: var(--accent); }
+  .btn { border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; background: var(--tab-bg); color: var(--text); }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .btn.small { padding: 5px 10px; font-size: 13px; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .note { color: var(--muted); font-size: 13px; }
+  .msg { margin-top: 10px; padding: 9px 12px; border-radius: 7px; font-size: 14px; display: none; }
+  .msg.ok { display: block; background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .msg.err { display: block; background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .status-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; border: 1px solid var(--line); white-space: nowrap; }
+  .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.off { color: var(--muted); }
+  .pill.err { color: var(--danger); border-color: var(--danger); }
+  .pill.hold { color: var(--accent); border-color: var(--accent); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .modo-line { margin: 8px 0 10px; font-size: 14px; color: var(--muted); }
+  .modo-line b { color: var(--text); }
+  .wallet { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+  .wallet .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .wallet .value small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 6px; }
+  .wallet .periods { display: flex; gap: 6px; margin: 8px 0 6px; flex-wrap: wrap; }
+  .wallet .periods button { background: var(--tab-bg); color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .wallet .periods button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .wallet .change { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .up { color: var(--ok); } .down { color: var(--danger); } .flat { color: var(--muted); }
+  dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 10px 0 0; font-size: 14px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+  .coins-status { display: grid; gap: 10px; margin-top: 4px; }
+  .coin-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .coin-card.holding { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+  .coin-card .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .coin-card .top b { font-size: 15.5px; }
+  .coin-card .price { font-variant-numeric: tabular-nums; }
+  .coin-card .chg { font-size: 12.5px; font-weight: 600; margin-left: 4px; }
+  .coin-card .top .pill { margin-left: auto; }
+  .coin-card .expand { border: 1px solid var(--line); background: var(--tab-bg); color: var(--text); border-radius: 6px; width: 30px; height: 28px; cursor: pointer; font-size: 14px; }
+  .coin-card .main { margin-top: 6px; font-size: 14px; }
+  .kv { display: flex; gap: 16px; flex-wrap: wrap; }
+  .kv span { display: flex; flex-direction: column; min-width: 0; }
+  .kv small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .kv b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+  details.help { margin: 0 0 12px; font-size: 13.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 6px 12px; }
+  details.help summary { cursor: pointer; font-weight: 600; color: var(--text); font-size: 13.5px; }
+  details.help ul { margin: 6px 0 4px 18px; padding: 0; }
+  details.help p { margin: 6px 0; }
+  .field .help, .check .help { display: none; }
+  body.show-help .field .help, body.show-help .check .help { display: block; }
+  .coin-card .details dd b { font-weight: 600; }
+  .coin-card .details { display: none; border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 4px; }
+  .coin-card.open .details { display: block; }
+  .coin-card .details dl { font-size: 13.5px; margin-top: 6px; }
+  table.balances { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  table.balances th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  table.balances td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  table.balances td.num, table.balances th.num { text-align: right; }
+  .warnbox { border-left: 4px solid var(--warn); padding: 8px 12px; background: color-mix(in srgb, var(--warn) 12%, transparent); border-radius: 6px; font-size: 13.5px; margin: 10px 0; }
+  pre.log { background: var(--code-bg); color: var(--code-text); border-radius: 8px; padding: 10px 12px; height: 260px; overflow: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; margin: 8px 0 0; }
+  .log-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .log-head a { color: var(--accent); font-size: 13px; }
+  details.adv summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+  .hidden { display: none !important; }
+  ul.open-list { margin: 6px 0 10px 18px; padding: 0; font-size: 14px; }
+  footer { max-width: 1240px; margin: 0 auto; padding: 0 16px 24px; color: var(--muted); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sistema · Bot Binance (spot)</h1>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="iniciar">1. Iniciar</button>
+      <button role="tab" aria-selected="false" data-tab="alimentar">2. Alimentar</button>
+      <button role="tab" aria-selected="false" data-tab="parar">3. Parar</button>
+    </div>
+
+    <!-- ================================================================ INICIAR -->
+    <section id="tab-iniciar">
+      <h2>Iniciar</h2>
+      <details class="help"><summary>Ajuda</summary><p>Informe cada moeda com seus próprios parâmetros. Valores em reais são convertidos pela cotação da moeda de cotação do par (ex.: USDT/BRL) no momento da compra.</p><p><button type="button" class="btn small" data-toggle-help>Mostrar explicação de cada campo</button></p></details>
+      <form id="form-start" autocomplete="off">
+        <fieldset>
+          <legend>Modo de execução</legend>
+          <div class="grid two">
+            <label class="field">
+              <span class="name">Modo</span>
+              <span class="help">Simulação não envia ordens. Testnet usa a Spot Testnet oficial (saldo fictício). Live opera com dinheiro real.</span>
+              <select name="mode" id="mode">
+                <option value="simulate">Simulação (sem ordens reais)</option>
+                <option value="testnet">Testnet da Binance</option>
+                <option value="live">Live (dinheiro real)</option>
+              </select>
+            </label>
+            <label class="field" id="confirm-field" style="display:none">
+              <span class="name">Confirmação do modo live</span>
+              <span class="help">Digite CONFIRMO (maiúsculas) para autorizar ordens reais.</span>
+              <input type="text" name="confirm" placeholder="CONFIRMO">
+            </label>
+          </div>
+          <div class="warnbox" id="live-warn" style="display:none">As chaves vêm das variáveis de ambiente <code>BINANCE_API_KEY</code> e <code>BINANCE_API_SECRET</code> (ou do arquivo .env) do processo <code>sistema.py</code>. Nada é digitado aqui.</div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Moedas</legend>
+                    <div id="coins-start"></div>
+          <button type="button" class="btn small" data-add="coins-start">+ Adicionar moeda</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Parada e retomada</legend>
+          <label class="check"><input type="checkbox" name="sell_on_stop" checked>
+            <span>Vender as posições abertas ao parar<span class="help">Padrão para a aba Parar. Pode ser alterado no momento da parada.</span></span></label>
+          <label class="check"><input type="checkbox" name="resume">
+            <span>Retomar posições salvas<span class="help">Recupera as posições gravadas em data/state_&lt;modo&gt;.json de uma execução anterior.</span></span></label>
+        </fieldset>
+
+        <details class="adv">
+          <summary>Avançado</summary>
+          <div class="grid three">
+            <label class="field">
+              <span class="name">Watchdog (segundos)</span>
+              <span class="help">Sem preços por este tempo: consulta REST e reconecta o WebSocket.</span>
+              <input type="number" name="watchdog_seconds" value="90" min="10">
+            </label>
+            <label class="field">
+              <span class="name">Espera entre tentativas de ordem (s)</span>
+              <span class="help">Após falha de compra ou venda.</span>
+              <input type="number" name="order_retry_seconds" value="10" min="1">
+            </label>
+            <label class="field sim-only">
+              <span class="name">Taxa simulada (%)</span>
+              <span class="help">Só em simulação. Padrão 0,1% por ordem.</span>
+              <input type="text" name="sim_fee_pct" value="0.1" inputmode="decimal">
+            </label>
+            <label class="field sim-only">
+              <span class="name">Slippage simulado (%)</span>
+              <span class="help">Só em simulação. Piora o preço de execução.</span>
+              <input type="text" name="sim_slippage_pct" value="0" inputmode="decimal">
+            </label>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button type="submit" class="btn primary" id="btn-start">Iniciar</button>
+          <span class="note">Os símbolos e filtros são validados na Binance antes de começar.</span>
+        </div>
+        <div class="msg" id="msg-start"></div>
+      </form>
+    </section>
+
+    <!-- ================================================================ ALIMENTAR -->
+    <section id="tab-alimentar" hidden>
+      <h2>Alimentar a execução em andamento</h2>
+      <details class="help"><summary>Ajuda</summary><p>Inclua moedas novas ou altere as existentes sem parar o bot. Em uma moeda com posição aberta, os níveis de stop, mínimo e trailing são recalculados.</p><p><button type="button" class="btn small" data-toggle-help>Mostrar explicação de cada campo</button></p></details>
+      <form id="form-feed" autocomplete="off">
+        <fieldset>
+          <legend>Moedas para incluir ou atualizar</legend>
+          <div id="coins-feed"></div>
+          <button type="button" class="btn small" data-add="coins-feed">+ Adicionar moeda</button>
+          <button type="button" class="btn small" id="btn-load-current">Carregar as moedas atuais</button>
+          <label class="field" style="margin-top:10px">
+            <span class="name">Como aplicar</span>
+            <span class="help">Incluir/atualizar mantém as demais moedas. Substituir deixa só as desta lista (moedas com posição aberta não são removidas).</span>
+            <select name="apply"><option value="upsert">Incluir ou atualizar estas moedas</option><option value="replace">Substituir a lista inteira por estas</option></select>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Remover moedas (opcional)</legend>
+          <label class="field">
+            <span class="name">Símbolos separados por vírgula</span>
+            <span class="help">Ex.: SOLBRL, ETHBRL. Uma moeda com posição aberta não pode ser removida: venda pela aba Parar ou aguarde a venda.</span>
+            <input type="text" name="remove" placeholder="SOLBRL, ETHBRL">
+          </label>
+        </fieldset>
+        <div class="actions">
+          <button type="submit" class="btn primary" id="btn-feed">Alimentar</button>
+          <span class="note" id="feed-hint"></span>
+        </div>
+        <div class="msg" id="msg-feed"></div>
+      </form>
+    </section>
+
+    <!-- ================================================================ PARAR -->
+    <section id="tab-parar" hidden>
+      <h2>Parar com segurança</h2>
+      <details class="help"><summary>Ajuda</summary><p>O bot fecha o WebSocket, cancela ordens pendentes dos símbolos envolvidos (testnet/live), salva o estado e encerra.</p></details>
+      <form id="form-stop">
+        <fieldset>
+          <legend>Posições abertas</legend>
+          <div id="stop-positions" class="intro">Sem posições abertas no momento.</div>
+          <label class="check"><input type="checkbox" name="sell_positions" id="sell_positions" checked>
+            <span>Vender todas as posições abertas a mercado antes de parar
+              <span class="help">Desmarcado: as posições ficam na conta sem proteção de stop até você reiniciar com "Retomar posições salvas" ou fechar manualmente.</span></span></label>
+        </fieldset>
+        <div class="actions">
+          <button type="submit" class="btn danger" id="btn-stop">Parar o bot</button>
+        </div>
+        <div class="msg" id="msg-stop"></div>
+      </form>
+    </section>
+  </div>
+
+  <!-- ================================================================ STATUS + LOG -->
+  <aside class="panel">
+    <div class="status-head">
+      <h2 style="margin:0">Situação</h2>
+      <span class="pill off" id="pill">desconectado</span>
+    </div>
+    <div class="modo-line">Modo: <b id="s-mode">–</b> · início <span id="s-started">–</span> · cotações <span id="s-rates">–</span></div>
+
+    <div class="wallet">
+      <div class="value"><span id="w-value">–</span><small>carteira</small></div>
+      <div class="periods" id="w-periods">
+        <button type="button" data-period="1h" aria-pressed="true">1h</button>
+        <button type="button" data-period="4h" aria-pressed="false">4h</button>
+        <button type="button" data-period="1d" aria-pressed="false">1d</button>
+        <button type="button" data-period="15d" aria-pressed="false">15d</button>
+      </div>
+      <div class="change flat" id="w-change">–</div>
+      <div class="stats" id="w-detail"></div>
+    </div>
+    <div class="wallet" id="acct"><div class="value"><span id="a-value">–</span><small>saldo na Binance</small></div><div class="stats" id="a-assets"></div></div>
+    <details class="help"><summary>Explicações</summary>
+      <ul>
+        <li>Saldo na Binance: conta spot lida pela API (testnet/live), atualizada a cada minuto, com cada ativo convertido em reais pelo par em BRL ou em USDT. Em simulação não há conta.</li>
+        <li>Carteira = capital alocado (soma dos valores por compra) + resultado realizado + resultado das posições abertas.</li>
+        <li>Variação por período: compara com o valor da carteira há 1h, 4h, 1d ou 15d. O asterisco (*) indica histórico mais curto que o período: a comparação é desde o início.</li>
+        <li>Variação ao lado do preço de cada moeda: últimas 24 horas, como na Binance.</li>
+        <li>Em posição: mínimo de venda, valor atual da posição, resultado, stop e trailing (quando armado). Aguardando: gatilho, valor da compra e o que espera (cair ou subir até o gatilho). A seta abre os detalhes.</li>
+        <li>Trailing: arma ao atingir o mínimo; vende no recuo a partir da máxima, nunca abaixo do mínimo, e só depois de uma reversão.</li>
+        <li>Todas as moedas são observadas ao mesmo tempo; cada uma volta ao gatilho depois de vender, até você parar.</li>
+        <li>Log completo em data/bot.log; cada ordem em data/trades_&lt;modo&gt;.csv.</li>
+      </ul>
+    </details>
+    <div class="warnbox" id="s-error" style="display:none"></div>
+
+    <div class="coins-status" id="coins-status"></div>
+
+    <h3 style="margin-top:16px">Moedas desta execução</h3>
+    <table class="balances" id="balances"><thead><tr><th>Moeda</th><th class="num">Saldo atual</th><th class="num">Resultado</th><th class="num">%</th><th class="num">Ordens</th></tr></thead><tbody></tbody></table>
+
+    <div class="log-head"><h3>Log <span class="note" id="log-count"></span></h3><a href="/api/log" target="_blank" rel="noopener">ver log completo</a></div>
+    <pre class="log" id="log">aguardando conexão com o sistema.py…</pre>
+  </aside>
+</main>
+
+
+<template id="coin-template">
+  <div class="coin">
+    <div class="coin-head"><h3>Moeda</h3><button type="button" class="btn small" data-remove>Remover</button></div>
+    <div class="grid three">
+      <label class="field">
+        <span class="name">Símbolo</span>
+        <span class="help">Par da Binance, ex.: BTCBRL, SUSDT. Pode digitar S/USDT.</span>
+        <input type="text" data-k="symbol" placeholder="BTCBRL">
+      </label>
+      <label class="field">
+        <span class="name">Preço de gatilho da compra</span>
+        <span class="help">Compra a mercado quando o preço atingir este valor.</span>
+        <input type="text" data-k="trigger" inputmode="decimal" placeholder="0,067">
+      </label>
+      <label class="field">
+        <span class="name">Direção do gatilho</span>
+        <span class="help">Auto: se o preço está acima, espera cair até o gatilho; se está abaixo, espera subir.</span>
+        <select data-k="direction">
+          <option value="auto">Auto (atingir o gatilho)</option>
+          <option value="below">Comprar quando preço ≤ gatilho</option>
+          <option value="above">Comprar quando preço ≥ gatilho</option>
+        </select>
+      </label>
+    </div>
+    <div class="grid three">
+      <label class="field">
+        <span class="name">Valor por compra (R$)</span>
+        <span class="help">Sempre em reais. Se o par for em USDT, o bot converte pela cotação USDT/BRL na hora da compra.</span>
+        <input type="text" data-k="amount_brl" inputmode="decimal" placeholder="50">
+      </label>
+      <label class="field">
+        <span class="name">Na queda: stop-loss</span>
+        <span class="help">Sobre o valor total da compra. Ex.: perder no máximo R$ 1,00; ou 2%; ou vender quando a posição valer R$ 48,50 no total.</span>
+        <div class="rule">
+          <input type="text" data-k="stop_value" inputmode="decimal" placeholder="1">
+          <select data-k="stop_unit"><option value="money">perda máxima em R$</option><option value="pct">perda máxima em %</option><option value="total">valor total em R$</option></select>
+        </div>
+      </label>
+      <label class="field">
+        <span class="name">Na alta: mínimo para venda</span>
+        <span class="help">Escolha uma opção por moeda: preço de venda da moeda (ex.: 0,071, acima do gatilho), lucro mínimo em R$ (ex.: 2,00) ou valor total da posição em R$ (ex.: 52,00). Ao atingir, o bot não vende: passa a seguir a alta.</span>
+        <div class="rule">
+          <input type="text" data-k="activation_value" inputmode="decimal" placeholder="0,071">
+          <select data-k="activation_unit"><option value="price">preço de venda</option><option value="money">lucro em R$</option><option value="total">valor total em R$</option><option value="pct">lucro em %</option></select>
+        </div>
+      </label>
+    </div>
+    <div class="grid three">
+      <label class="field">
+        <span class="name">Recuo do trailing</span>
+        <span class="help">Queda a partir da máxima que dispara a venda. Nunca vende abaixo do mínimo: se o recuo cair abaixo dele, vende no mínimo.</span>
+        <div class="rule">
+          <input type="text" data-k="trail_value" inputmode="decimal" placeholder="0,8">
+          <select data-k="trail_unit"><option value="pct">%</option><option value="money">R$ na operação</option></select>
+        </div>
+      </label>
+    </div>
+  </div>
+</template>
+
+<script>
+(function () {
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // ---------- ajuda dos campos
+  function applyHelp(on) { document.body.classList.toggle('show-help', on); $$('[data-toggle-help]').forEach(b => b.textContent = on ? 'Ocultar explicação de cada campo' : 'Mostrar explicação de cada campo'); }
+  let helpOn = false; try { helpOn = localStorage.getItem('sistema.help') === '1'; } catch (e) {}
+  applyHelp(helpOn);
+  $$('[data-toggle-help]').forEach(b => b.addEventListener('click', () => { helpOn = !helpOn; try { localStorage.setItem('sistema.help', helpOn ? '1' : '0'); } catch (e) {} applyHelp(helpOn); }));
+
+  // ---------- abas
+  $$('.tabs button').forEach(btn => btn.addEventListener('click', () => {
+    $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+    $$('main section').forEach(s => s.hidden = s.id !== 'tab-' + btn.dataset.tab);
+    try { localStorage.setItem('sistema.tab', btn.dataset.tab); } catch (e) {}
+  }));
+  try { const t = localStorage.getItem('sistema.tab'); if (t) $(`.tabs button[data-tab="${t}"]`)?.click(); } catch (e) {}
+
+  // ---------- cartões de moeda (formulários)
+  function addCoin(containerId, data) {
+    const box = $('#' + containerId);
+    const node = $('#coin-template').content.firstElementChild.cloneNode(true);
+    const n = box.children.length + 1;
+    node.querySelector('h3').textContent = 'Moeda ' + n;
+    $$('[data-k]', node).forEach(el => { el.id = `${containerId}-${n}-${el.dataset.k}`; });
+    node.querySelector('[data-remove]').addEventListener('click', () => { node.remove(); $$('.coin', box).forEach((c, i) => c.querySelector('h3').textContent = 'Moeda ' + (i + 1)); });
+    if (data) fillCoin(node, data);
+    box.appendChild(node);
+    return node;
+  }
+  function fillCoin(node, d) {
+    const set = (k, v) => { const el = node.querySelector(`[data-k="${k}"]`); if (el && v != null) el.value = v; };
+    set('symbol', d.symbol); set('trigger', d.trigger); set('direction', d.direction || 'auto'); set('amount_brl', d.amount_brl);
+    const r = d.rules || {};
+    set('stop_value', r.stop?.value); set('stop_unit', r.stop?.unit);
+    set('activation_value', r.activation?.value); set('activation_unit', r.activation?.unit);
+    set('trail_value', r.trail?.value); set('trail_unit', r.trail?.unit);
+  }
+  function readCoins(containerId) {
+    return $$('#' + containerId + ' .coin').map(node => {
+      const get = k => node.querySelector(`[data-k="${k}"]`).value.trim();
+      return {
+        symbol: get('symbol').toUpperCase(), trigger: get('trigger'), direction: get('direction'), amount_brl: get('amount_brl'),
+        stop: { unit: get('stop_unit'), value: get('stop_value') },
+        activation: { unit: get('activation_unit'), value: get('activation_value') },
+        trail: { unit: get('trail_unit'), value: get('trail_value') },
+      };
+    }).filter(c => c.symbol || c.trigger || c.amount_brl);
+  }
+  $$('[data-add]').forEach(b => b.addEventListener('click', () => addCoin(b.dataset.add)));
+  addCoin('coins-start', { symbol: 'SUSDT', trigger: '0,067', amount_brl: '50', rules: { stop: { unit: 'money', value: '1' }, activation: { unit: 'price', value: '0,071' }, trail: { unit: 'pct', value: '0,8' } } });
+  addCoin('coins-start', { symbol: 'ETHBRL', trigger: '20000', amount_brl: '50', rules: { stop: { unit: 'money', value: '1' }, activation: { unit: 'money', value: '2' }, trail: { unit: 'pct', value: '0,8' } } });
+  addCoin('coins-feed');
+
+  const modeSel = $('#mode');
+  function onMode() {
+    const live = modeSel.value === 'live', sim = modeSel.value === 'simulate';
+    $('#confirm-field').style.display = live ? '' : 'none';
+    $('#live-warn').style.display = sim ? 'none' : '';
+    $$('.sim-only').forEach(el => el.classList.toggle('hidden', !sim));
+  }
+  modeSel.addEventListener('change', onMode); onMode();
+
+  // ---------- util
+  function msg(id, text, ok) { const el = $(id); el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); }
+  async function post(path, body) {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({ error: 'resposta inválida do servidor' }));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    return data;
+  }
+  const fmtTime = iso => iso ? new Date(iso).toLocaleString('pt-BR') : '–';
+  const brl = v => v == null || v === '' ? '–' : 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const brlSigned = v => v == null ? '–' : (Number(v) > 0 ? '+' : '') + brl(v);
+  const pct = v => v == null || v === '' ? '–' : (Number(v) > 0 ? '+' : '') + Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + '%';
+  const px = v => { if (v == null || v === '') return '–'; const n = Number(v); if (!Number.isFinite(n)) return String(v); return String(Number(n.toPrecision(8))).replace('.', ','); };
+  const cls = v => v == null ? 'flat' : Number(v) > 0 ? 'up' : Number(v) < 0 ? 'down' : 'flat';
+  const UNIT = { money: v => brl(v), pct: v => pct(v).replace('+', ''), price: v => 'preço ' + px(v), total: v => 'total ' + brl(v) };
+
+  // ---------- iniciar
+  $('#form-start').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = ev.target, btn = $('#btn-start');
+    const payload = {
+      mode: f.elements.mode.value, confirm: f.elements.confirm.value.trim(), plans: readCoins('coins-start'),
+      sell_on_stop: f.elements.sell_on_stop.checked, resume: f.elements.resume.checked,
+      watchdog_seconds: f.elements.watchdog_seconds.value, order_retry_seconds: f.elements.order_retry_seconds.value,
+      sim_fee_pct: f.elements.sim_fee_pct.value, sim_slippage_pct: f.elements.sim_slippage_pct.value,
+    };
+    if (payload.mode === 'live' && !confirm('Modo LIVE: ordens reais serão enviadas com dinheiro real. Continuar?')) return;
+    btn.disabled = true; msg('#msg-start', 'Validando símbolos e iniciando…', true);
+    try {
+      await post('/api/start', payload);
+      msg('#msg-start', 'Execução iniciada. Acompanhe a situação e o log ao lado.', true);
+      $('#sell_positions').checked = payload.sell_on_stop;
+    } catch (e) { msg('#msg-start', 'Não iniciado: ' + e.message, false); }
+    finally { btn.disabled = false; refresh(); }
+  });
+
+  // ---------- alimentar
+  let lastStatus = null;
+  $('#btn-load-current').addEventListener('click', () => {
+    const coins = lastStatus?.bot?.coins || [];
+    if (!coins.length) { msg('#msg-feed', 'Nenhuma execução em andamento para carregar.', false); return; }
+    $('#coins-feed').innerHTML = '';
+    coins.forEach(c => addCoin('coins-feed', c.plan));
+    msg('#msg-feed', coins.length + ' moeda(s) carregada(s). Edite e clique em Alimentar.', true);
+  });
+  $('#form-feed').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = ev.target, btn = $('#btn-feed');
+    const payload = { apply: f.elements.apply.value, plans: readCoins('coins-feed'),
+                      remove: f.elements.remove.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) };
+    btn.disabled = true;
+    try {
+      const r = await post('/api/feed', payload);
+      msg('#msg-feed', 'Aplicado: ' + (r.applied.join(', ') || 'nenhuma alteração') + '.', true);
+      f.elements.remove.value = '';
+    } catch (e) { msg('#msg-feed', 'Não aplicado: ' + e.message, false); }
+    finally { btn.disabled = false; refresh(); }
+  });
+
+  // ---------- parar
+  $('#form-stop').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const sell = $('#sell_positions').checked;
+    if (!confirm(sell ? 'Parar o bot e vender todas as posições abertas a mercado?' : 'Parar o bot mantendo as posições abertas (sem proteção de stop)?')) return;
+    const btn = $('#btn-stop'); btn.disabled = true; msg('#msg-stop', 'Parando…', true);
+    try {
+      const r = await post('/api/stop', { sell_positions: sell });
+      const b = r.bot || {};
+      msg('#msg-stop', 'Bot parado. ' + (b.open_positions ? b.open_positions + ' posição(ões) mantida(s) na conta.' : 'Sem posições abertas.'), true);
+    } catch (e) { msg('#msg-stop', 'Falha ao parar: ' + e.message, false); }
+    finally { btn.disabled = false; refresh(); }
+  });
+
+  // ---------- situação
+  const PHASES = { WAITING_BUY: 'aguardando gatilho', HOLDING: 'em posição', ERROR: 'erro' };
+  let period = '1h';
+  try { period = localStorage.getItem('sistema.period') || '1h'; } catch (e) {}
+  $$('#w-periods button').forEach(b => b.addEventListener('click', () => { period = b.dataset.period; try { localStorage.setItem('sistema.period', period); } catch (e) {} if (lastStatus) render(lastStatus); }));
+  const openCards = new Set();
+  let logPinned = true;
+  const logEl = $('#log');
+  logEl.addEventListener('scroll', () => { logPinned = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 8; });
+
+  function coinCard(c) {
+    const p = c.plan, r = p.rules, pos = c.position, holding = c.phase === 'HOLDING';
+    const pillCls = holding ? 'hold' : c.phase === 'ERROR' ? 'err' : 'warn';
+    const chg = c.change_24h_pct;
+    let main;
+    if (pos) {
+      main = `<div class="kv"><span><small>Venda mín.</small><b>${px(pos.activation_price)}</b></span><span><small>Posição</small><b>${brl(pos.value_brl)}</b></span><span><small>Resultado</small><b class="${cls(pos.pnl_brl)}">${brlSigned(pos.pnl_brl)} (${pct(pos.pnl_pct)})</b></span><span><small>Stop</small><b>${px(pos.stop_loss_price)}</b></span>${pos.trailing_armed ? `<span><small>Trailing</small><b>${px(pos.trailing_stop_price)}</b></span>` : ''}</div>`;
+    } else {
+      main = `<div class="kv"><span><small>Compra em</small><b>${px(p.trigger)}</b></span><span><small>Valor</small><b>${brl(p.amount_brl)}</b></span><span><small>Espera</small><b>${c.resolved === 'below' ? 'cair até o gatilho' : c.resolved === 'above' ? 'subir até o gatilho' : '1º preço'}</b></span>${c.error ? `<span><small>Erro</small><b class="down">${c.error}</b></span>` : ''}</div>`;
+    }
+    let det = `<dt>Gatilho</dt><dd><b>${px(p.trigger)}</b> · <b>${brl(p.amount_brl)}</b> · ${p.direction}</dd>
+      <dt>Stop-loss</dt><dd><b>${UNIT[r.stop.unit](r.stop.value)}</b>${pos ? ' → <b>' + px(pos.stop_loss_price) + '</b> (' + pct(pos.stop_pct) + ')' : ''}</dd>
+      <dt>Mínimo</dt><dd><b>${UNIT[r.activation.unit](r.activation.value)}</b>${pos ? ' → <b>' + px(pos.activation_price) + '</b> (' + pct(pos.activation_pct) + ')' : ''}</dd>
+      <dt>Trailing</dt><dd><b>${UNIT[r.trail.unit](r.trail.value)}</b> da máxima · piso: mínimo${pos && pos.trailing_armed ? ' · armado <b>' + px(pos.trailing_stop_price) + '</b> (' + pct(pos.trailing_pct_from_high) + ' da máx. ' + px(pos.highest) + ')' : pos ? ' · não armado' : ''}</dd>`;
+    if (pos) det += `<dt>Compra</dt><dd><b>${px(pos.entry_price)}</b> · <b>${pos.qty}</b> un · <b>${brl(pos.entry_brl)}</b> · cotação <b>${pos.rate}</b> · ${fmtTime(pos.entry_time)}</dd>`;
+    det += `<dt>Ordens</dt><dd><b>${c.trades}</b></dd>
+      <dt>Realizado</dt><dd><b class="${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}</b>${c.realized_pct != null ? ' (' + pct(c.realized_pct) + ')' : ''}</dd>`;
+    return `<div class="coin-card ${holding ? 'holding' : ''} ${openCards.has(c.symbol) ? 'open' : ''}" data-sym="${c.symbol}">
+      <div class="top"><b>${c.symbol}</b><span class="price">${px(c.price)}<span class="chg ${cls(chg)}">${chg == null ? '' : pct(chg) + ' 24h'}</span></span>
+        <span class="pill ${pillCls}">${PHASES[c.phase] || c.phase}</span><button type="button" class="expand" title="Mais detalhes" aria-label="Mais detalhes de ${c.symbol}">${openCards.has(c.symbol) ? '▴' : '▾'}</button></div>
+      <div class="main">${main}</div>
+      <div class="details"><dl>${det}</dl></div>
+    </div>`;
+  }
+
+  function bindCards() {
+    $$('#coins-status .coin-card').forEach(card => {
+      const sym = card.dataset.sym, btn = card.querySelector('.expand');
+      btn.addEventListener('mouseenter', () => { card.classList.add('open'); btn.textContent = '▴'; });
+      btn.addEventListener('click', () => { if (openCards.has(sym)) openCards.delete(sym); else openCards.add(sym); card.classList.toggle('open', openCards.has(sym)); btn.textContent = openCards.has(sym) ? '▴' : '▾'; });
+      card.addEventListener('mouseleave', () => { if (!openCards.has(sym)) { card.classList.remove('open'); btn.textContent = '▾'; } });
+    });
+  }
+
+  function render(st) {
+    lastStatus = st;
+    const b = st.bot, pill = $('#pill');
+    pill.textContent = st.running ? 'em execução' : (b ? 'parado' : 'ocioso');
+    pill.className = 'pill ' + (st.running ? 'on' : (b && b.phase === 'ERROR' ? 'err' : 'off'));
+    $('#btn-feed').disabled = !st.running; $('#btn-stop').disabled = !st.running;
+    $('#feed-hint').textContent = st.running ? '' : 'Nenhuma execução em andamento.';
+    $('#s-started').textContent = fmtTime(st.started_at) + (st.finished_at ? ' → ' + fmtTime(st.finished_at) : '');
+    const err = $('#s-error');
+    const errText = st.last_error || (b && b.error);
+    err.style.display = errText ? '' : 'none'; err.textContent = errText || '';
+    $$('#w-periods button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.period === period)));
+    if (!b) { $('#s-mode').textContent = '–'; $('#s-rates').textContent = '–'; $('#w-value').textContent = '–'; $('#w-change').textContent = '–'; $('#w-change').className = 'change flat';
+              $('#w-detail').innerHTML = ''; $('#a-value').textContent = '–'; $('#a-assets').innerHTML = ''; $('#coins-status').innerHTML = ''; $('#balances tbody').innerHTML = '';
+              $('#stop-positions').textContent = 'Sem posições abertas no momento.'; return; }
+    $('#s-mode').textContent = { simulate: 'Simulação', testnet: 'Testnet', live: 'LIVE (dinheiro real)' }[b.mode] || b.mode;
+    $('#s-rates').textContent = Object.entries(b.rates).filter(([k]) => k !== 'BRL').map(([k, v]) => `${k}/BRL ${px(v)}`).join(' · ') || 'pares em BRL';
+    const a = b.account;
+    if (!a) { $('#a-value').textContent = b.mode === 'simulate' ? 'sem conta' : '–'; $('#a-assets').innerHTML = b.mode === 'simulate' ? '<span>simulação: não há conta Binance</span>' : '<span>aguardando leitura da conta</span>'; }
+    else if (a.error) { $('#a-value').textContent = '–'; $('#a-assets').innerHTML = `<span class="down">${a.error}</span>`; }
+    else { $('#a-value').textContent = brl(a.total_brl); $('#a-assets').innerHTML = a.assets.map(x => `<span>${x.asset} <b>${x.value_brl != null ? brl(x.value_brl) : px(Number(x.free) + Number(x.locked)) + ' un'}</b></span>`).join('') + `<span>atualizado <b>${new Date(a.updated_at * 1000).toLocaleTimeString('pt-BR')}</b></span>`; }
+    const w = b.wallet || {};
+    $('#w-value').textContent = brl(w.value);
+    const ch = (w.changes || {})[period] || {};
+    const wc = $('#w-change');
+    wc.className = 'change ' + cls(ch.pct);
+    wc.textContent = ch.pct == null ? '–' : `${brlSigned(ch.brl)} (${pct(ch.pct)})${ch.since_start ? ' *' : ''}`;
+    $('#w-detail').innerHTML = `<span>Alocado <b>${brl(w.allocated)}</b></span><span>Realizado <b class="${cls(w.realized)}">${brlSigned(w.realized)}</b></span><span>Aberto <b class="${cls(w.unrealized)}">${brlSigned(w.unrealized)}</b></span><span>Vendas <b>${b.sales}</b></span><span>Posições <b>${b.open_positions}</b></span>`;
+    $('#coins-status').innerHTML = b.coins.map(coinCard).join('');
+    bindCards();
+    const total = Number(w.value) || 0;
+    $('#balances tbody').innerHTML = b.coins.map(c => {
+      const bal = Number(c.balance_brl) || 0;
+      return `<tr><td>${c.symbol}</td><td class="num">${brl(bal)}${total ? ' <span class="note">(' + (bal / total * 100).toFixed(1).replace('.', ',') + '%)</span>' : ''}</td>
+        <td class="num ${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}</td><td class="num ${cls(c.realized_pct)}">${c.realized_pct != null ? pct(c.realized_pct) : '–'}</td><td class="num">${c.trades}</td></tr>`;
+    }).join('');
+    const open = b.coins.filter(c => c.position);
+    $('#stop-positions').innerHTML = open.length
+      ? '<ul class="open-list">' + open.map(c => `<li>${c.symbol}: qtd ${c.position.qty}, entrada ${px(c.position.entry_price)}, agora ${brl(c.position.value_brl)} (${brlSigned(c.position.pnl_brl)})</li>`).join('') + '</ul>'
+      : 'Sem posições abertas no momento.';
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      const st = await r.json();
+      render(st);
+      logEl.textContent = (st.log || []).join('\n') || '(sem registros ainda)';
+      $('#log-count').textContent = st.log_total ? `(últimas ${Math.min(200, st.log_total)} de ${st.log_total} linhas)` : '';
+      if (logPinned) logEl.scrollTop = logEl.scrollHeight;
+    } catch (e) {
+      const pill = $('#pill'); pill.textContent = 'sem conexão'; pill.className = 'pill err';
+    }
+  }
+  refresh(); setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>
