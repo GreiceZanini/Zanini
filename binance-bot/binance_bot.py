@@ -42,6 +42,8 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 DEFAULT_STEP = Decimal("0.00000001")
 LEVEL_PRECISION = Decimal("1e-12")   # arredondamento dos niveis calculados (stop, minimo, trailing)
+PERIODS = {"1h": 3600, "4h": 4 * 3600, "1d": 86400, "15d": 15 * 86400}   # variacao da carteira por periodo
+EQUITY_SAMPLE_SECONDS = 60
 BRL = "BRL"
 KNOWN_QUOTES = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB", "BRL", "EUR", "TRY")
 
@@ -239,6 +241,12 @@ class CoinPlan:
         if self.direction not in ("auto", "below", "above"):
             raise ValueError(f"{self.symbol}: direcao deve ser auto, below ou above")
         self.rules.validate()
+        if self.rules.stop.unit == "price" and self.rules.stop.value >= self.trigger:
+            raise ValueError(f"{self.symbol}: stop-loss em preco ({dec_str(self.rules.stop.value)}) precisa ficar ABAIXO do "
+                             f"gatilho de compra ({dec_str(self.trigger)}); se queria percentual, use a unidade %")
+        if self.rules.activation.unit == "price" and self.rules.activation.value <= self.trigger:
+            raise ValueError(f"{self.symbol}: minimo para venda em preco ({dec_str(self.rules.activation.value)}) precisa ficar "
+                             f"ACIMA do gatilho de compra ({dec_str(self.trigger)})")
 
     def describe(self) -> str:
         return (f"{self.symbol} gatilho={dec_str(self.trigger)} compra={brl_str(self.amount_brl)} "
@@ -337,6 +345,10 @@ class Slot:
     next_attempt: float = 0.0
     last_price: Optional[Decimal] = None
     error: Optional[str] = None
+    day_open: Optional[Decimal] = None        # abertura das ultimas 24h (miniTicker), para a variacao
+    trades: int = 0                           # ordens executadas (compras + vendas) desde o inicio
+    realized_brl: Decimal = ZERO              # resultado realizado desta moeda
+    invested_brl: Decimal = ZERO              # soma dos valores comprados (base do percentual)
 
     def check_trigger(self, price: Decimal) -> bool:
         t = self.plan
@@ -553,6 +565,10 @@ class TradingBot:
         self.phase = "RUNNING"
         self.error_message: Optional[str] = None
         self._rate_warned: set = set()
+        self.started_at = time.time()
+        self.equity_history: List[tuple] = []     # (timestamp, valor da carteira em R$)
+        self._last_equity_sample = 0.0
+        self.equity_file: Optional[Path] = (cfg.state_file.parent / f"equity_{cfg.mode}.csv") if cfg.state_file else None
 
     # -- preparacao -------------------------------------------------------------
     def rate_symbols(self) -> List[str]:
@@ -588,6 +604,7 @@ class TradingBot:
             self._ensure_rate(f.quote_asset)
             self.slots[plan.symbol] = Slot(plan=plan)
             log.info("plano: %s", plan.describe())
+        self._load_equity_history()
         self.on_symbols_changed(self.watched_symbols())
 
     # -- conversao de moeda ------------------------------------------------------------
@@ -655,6 +672,80 @@ class TradingBot:
                 self._try_buy(slot, price, now)
         elif slot.phase == SlotPhase.HOLDING and slot.position:
             self._manage(slot, price, now)
+        self.record_equity(now)
+
+    def handle_ticker(self, symbol: str, day_open: Decimal, last: Optional[Decimal] = None) -> None:
+        """Estatisticas de 24h (stream miniTicker): abertura para calcular a variacao como a Binance mostra."""
+        slot = self.slots.get(symbol)
+        if slot:
+            slot.day_open = day_open
+            if last is not None and slot.last_price is None:
+                slot.last_price = last
+
+    # -- carteira ---------------------------------------------------------------------
+    def allocated_brl(self) -> Decimal:
+        return sum((s.plan.amount_brl for s in self.slots.values()), ZERO)
+
+    def unrealized_brl(self) -> Decimal:
+        total = ZERO
+        for s in self.slots.values():
+            if s.position and s.last_price is not None:
+                rate = self.rate_for(s.plan.symbol) or s.position.rate
+                total += s.position.qty * s.last_price * rate - s.position.entry_brl
+        return total
+
+    def wallet_value(self) -> Decimal:
+        """Capital alocado (soma dos valores por compra) + resultado realizado + resultado das posicoes abertas."""
+        return self.allocated_brl() + self.realized_brl + self.unrealized_brl()
+
+    def record_equity(self, now: float, force: bool = False) -> None:
+        if not force and now - self._last_equity_sample < EQUITY_SAMPLE_SECONDS:
+            return
+        self._last_equity_sample = now
+        value = self.wallet_value().quantize(Decimal("0.01"))
+        self.equity_history.append((now, value))
+        cutoff = now - PERIODS["15d"] - 3600
+        while self.equity_history and self.equity_history[0][0] < cutoff:
+            self.equity_history.pop(0)
+        if self.equity_file:
+            try:
+                with open(self.equity_file, "a", encoding="utf-8") as fh:
+                    fh.write(f"{int(now)},{dec_str(value)}\n")
+            except OSError as exc:
+                log.debug("nao foi possivel gravar historico da carteira: %s", exc)
+
+    def _load_equity_history(self) -> None:
+        if not self.equity_file or not self.equity_file.is_file():
+            return
+        cutoff = time.time() - PERIODS["15d"] - 3600
+        try:
+            for line in self.equity_file.read_text(encoding="utf-8").splitlines():
+                ts, _, val = line.partition(",")
+                if ts and val and float(ts) >= cutoff:
+                    self.equity_history.append((float(ts), to_dec(val)))
+        except (OSError, ValueError) as exc:
+            log.warning("historico da carteira ignorado: %s", exc)
+
+    def wallet_changes(self, now: Optional[float] = None) -> Dict[str, dict]:
+        now = time.time() if now is None else now
+        current = self.wallet_value()
+        out = {}
+        for name, secs in PERIODS.items():
+            ref = None
+            since_start = False
+            for ts, val in reversed(self.equity_history):
+                if ts <= now - secs:
+                    ref = val
+                    break
+            if ref is None and self.equity_history:
+                ref = self.equity_history[0][1]
+                since_start = True
+            if ref is None or ref == ZERO:
+                out[name] = {"pct": None, "brl": None, "since_start": True}
+            else:
+                out[name] = {"pct": dec_str(((current - ref) / ref * 100).quantize(Decimal("0.01"))),
+                             "brl": dec_str((current - ref).quantize(Decimal("0.01"))), "since_start": since_start}
+        return out
 
     # -- compra ---------------------------------------------------------------------
     def _try_buy(self, slot: Slot, price: Decimal, now: float) -> None:
@@ -705,9 +796,12 @@ class TradingBot:
         log.info("niveis %s: stop-loss=%s | minimo para venda=%s | trailing=%s a partir da maxima (nunca abaixo do minimo)",
                  fill.symbol, dec_str(pos.stop_loss_price), dec_str(pos.activation_price),
                  plan.rules.describe().split("trailing=")[1])
+        slot.trades += 1
+        slot.invested_brl += pos.entry_brl
         if self.trades:
             self.trades.record(fill, f"gatilho {dec_str(plan.trigger)}", f.quote_asset, rate)
         self.save_state()
+        self.record_equity(now, force=True)
 
     # -- gestao da posicao -----------------------------------------------------------
     def _manage(self, slot: Slot, price: Decimal, now: float) -> None:
@@ -779,9 +873,12 @@ class TradingBot:
                  dec_str(pnl_pct.quantize(Decimal("0.01"))), brl_str(self.realized_brl), self.sales)
         if self.trades:
             self.trades.record(fill, reason, f.quote_asset, rate, pnl_quote, pnl_brl, pnl_pct)
+        slot.trades += 1
+        slot.realized_brl += pnl_brl
         slot.position, slot.phase, slot.resolved = None, SlotPhase.WAITING, None
         log.info("%s volta a observar o gatilho %s", pos.symbol, dec_str(slot.plan.trigger))
         self.save_state()
+        self.record_equity(now, force=True)
 
     # -- atualizacoes em execucao (alimentar) ---------------------------------------------
     def update_plans(self, plans: List[CoinPlan], mode: str = "upsert") -> List[str]:
@@ -849,27 +946,49 @@ class TradingBot:
         return [s.position for s in self.slots.values() if s.position]
 
     def snapshot(self) -> dict:
+        now = time.time()
+        q2 = Decimal("0.01")
         coins = []
         for sym, s in self.slots.items():
             f = self.filters.get(sym)
             price = s.last_price
+            rate = (self.rate_for(sym) if f else None)
             pos = s.position.to_dict() if s.position else None
+            value_brl = None
             if s.position and price is not None:
                 p = s.position
-                rate = self.rate_for(sym) or p.rate
-                pos["value_brl"] = dec_str((p.qty * price * rate).quantize(Decimal("0.01")))
-                pos["pnl_brl"] = dec_str((p.qty * price * rate - p.entry_brl).quantize(Decimal("0.01")))
-                pos["pnl_pct"] = dec_str(((price / p.entry_price - 1) * 100).quantize(Decimal("0.01")))
+                r = rate or p.rate
+                value_brl = (p.qty * price * r).quantize(q2)
+                pos["value_brl"] = dec_str(value_brl)
+                pos["pnl_brl"] = dec_str((value_brl - p.entry_brl).quantize(q2))
+                pos["pnl_pct"] = dec_str(((price / p.entry_price - 1) * 100).quantize(q2))
+                pos["stop_pct"] = dec_str(((p.stop_loss_price / p.entry_price - 1) * 100).quantize(q2))
+                pos["activation_pct"] = dec_str(((p.activation_price / p.entry_price - 1) * 100).quantize(q2))
+                pos["trailing_pct_from_high"] = (dec_str(((p.trailing_stop_price / p.highest - 1) * 100).quantize(q2))
+                                                 if p.trailing_armed and p.trailing_stop_price else None)
+            change_24h = None
+            if s.day_open and price is not None and s.day_open > ZERO:
+                change_24h = dec_str(((price / s.day_open - 1) * 100).quantize(q2))
             coins.append({
                 "symbol": sym, "phase": s.phase, "quote_asset": f.quote_asset if f else None,
-                "rate": dec_str(self.rate_for(sym)) if f and self.rate_for(sym) is not None else None,
-                "price": dec_str(price) if price is not None else None,
+                "rate": dec_str(rate) if rate is not None else None,
+                "price": dec_str(price) if price is not None else None, "change_24h_pct": change_24h,
                 "plan": s.plan.to_dict(), "resolved": s.resolved, "position": pos, "error": s.error,
+                "trades": s.trades, "realized_brl": dec_str(s.realized_brl.quantize(q2)),
+                "realized_pct": dec_str((s.realized_brl / s.invested_brl * 100).quantize(q2)) if s.invested_brl else None,
+                "balance_brl": dec_str(value_brl) if value_brl is not None else "0",
             })
+        coins.sort(key=lambda c: (0 if c["phase"] == SlotPhase.HOLDING else 1 if c["phase"] == SlotPhase.WAITING else 2))
+        wallet_value = self.wallet_value().quantize(q2)
         return {"phase": self.phase, "mode": self.cfg.mode, "coins": coins, "watched": self.watched_symbols(),
                 "rates": {k: dec_str(v) for k, v in self.rates.items()},
-                "realized_brl": dec_str(self.realized_brl.quantize(Decimal("0.01"))), "sales": self.sales,
-                "open_positions": len(self.open_positions()), "error": self.error_message}
+                "realized_brl": dec_str(self.realized_brl.quantize(q2)), "sales": self.sales,
+                "open_positions": len(self.open_positions()), "error": self.error_message,
+                "started_at": datetime.fromtimestamp(self.started_at, tz=timezone.utc).isoformat(),
+                "wallet": {"value": dec_str(wallet_value), "allocated": dec_str(self.allocated_brl().quantize(q2)),
+                           "realized": dec_str(self.realized_brl.quantize(q2)),
+                           "unrealized": dec_str(self.unrealized_brl().quantize(q2)),
+                           "changes": self.wallet_changes(now), "samples": len(self.equity_history)}}
 
     # -- parada segura --------------------------------------------------------------------
     def shutdown(self, sell_positions: bool) -> None:
@@ -906,7 +1025,9 @@ class TradingBot:
         state = {
             "saved_at": utcnow().isoformat(), "mode": self.cfg.mode,
             "realized_brl": dec_str(self.realized_brl), "sales": self.sales,
-            "slots": [{"plan": s.plan.to_dict(), "phase": s.phase, "position": s.position.to_dict() if s.position else None}
+            "started_at": self.started_at,
+            "slots": [{"plan": s.plan.to_dict(), "phase": s.phase, "position": s.position.to_dict() if s.position else None,
+                       "trades": s.trades, "realized_brl": dec_str(s.realized_brl), "invested_brl": dec_str(s.invested_brl)}
                       for s in self.slots.values()],
         }
         tmp = self.cfg.state_file.with_suffix(".tmp")
@@ -939,6 +1060,9 @@ class TradingBot:
             slot = self.slots[sym]
             slot.position = Position.from_dict(pos)
             slot.phase = SlotPhase.HOLDING
+            slot.trades = int(item.get("trades", 0))
+            slot.realized_brl = to_dec(item.get("realized_brl", "0"))
+            slot.invested_brl = to_dec(item.get("invested_brl", "0"))
             self._apply_levels(slot.position, slot.plan.rules)
             restored += 1
             log.info("posicao retomada: %s qtd=%s entrada=%s (salvo em %s)", sym, dec_str(slot.position.qty),
@@ -992,6 +1116,8 @@ class PriceFeed:
                 return
             if data.get("e") == "trade" and "p" in data and "s" in data:
                 self._q.put(("price", data["s"], to_dec(data["p"]), time.time()))
+            elif data.get("e") == "24hrMiniTicker" and "o" in data and "s" in data:
+                self._q.put(("ticker", data["s"], to_dec(data["o"]), to_dec(data.get("c", data["o"]))))
         except Exception as exc:  # noqa: BLE001
             self._q.put(("error", f"mensagem invalida do websocket: {exc}"))
 
@@ -1017,7 +1143,7 @@ class PriceFeed:
             twm = self._twm_cls(testnet=self._testnet)
             twm.daemon = True
             twm.start()
-            streams = [f"{s.lower()}@trade" for s in symbols]
+            streams = [f"{s.lower()}@trade" for s in symbols] + [f"{s.lower()}@miniTicker" for s in symbols]
             twm.start_multiplex_socket(callback=self._on_message, streams=streams)
             self._twm = twm
             log.info("websocket assinado: %s", ", ".join(streams))
@@ -1176,6 +1302,8 @@ def run_live_loop(bot: TradingBot, feed: PriceFeed, q: "queue.Queue", args, stop
                 _, symbol, price, _ts = item
                 if symbol in bot.watched_symbols():
                     bot.handle_price(symbol, price, now)
+            elif item[0] == "ticker":
+                bot.handle_ticker(item[1], item[2], item[3])
             elif item[0] == "error":
                 log.error("websocket: %s", item[1])
             elif item[0] == "command":

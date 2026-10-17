@@ -122,6 +122,8 @@ def test_http_api_roundtrip(tmp_path):
     runner = make_runner(tmp_path)
     memlog = sistema.MemoryLogHandler()
     logging.getLogger().addHandler(memlog)
+    old_level = logging.getLogger().level
+    logging.getLogger().setLevel(logging.INFO)
     server = sistema.ThreadingHTTPServer(("127.0.0.1", 0), sistema.make_handler(runner, memlog))
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -147,9 +149,13 @@ def test_http_api_roundtrip(tmp_path):
         assert code == 200 and body["running"]
         code, body, _ = call("/api/status")
         assert body["bot"]["coins"][0]["symbol"] == "SUSDT" and isinstance(body["log"], list)
+        assert "wallet" in body["bot"] and body["log_total"] >= len(body["log"])
+        code, text, ctype = call("/api/log")
+        assert code == 200 and "text/plain" in ctype and "plano: SUSDT" in text
         code, body, _ = call("/api/stop", {"sell_positions": False})
         assert code == 200 and not body["running"]
     finally:
         server.shutdown()
         server.server_close()
         logging.getLogger().removeHandler(memlog)
+        logging.getLogger().setLevel(old_level)

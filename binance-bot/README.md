@@ -45,7 +45,9 @@ python sistema.py            # abre http://127.0.0.1:8080
 - Alimentar: com o bot rodando, inclui ou atualiza moedas (níveis das posições abertas são recalculados), substitui a
   lista ou remove moedas sem posição aberta.
 - Parar: mostra as posições abertas e para com segurança, vendendo ou não as posições.
-- Ao lado: situação por moeda (fase, preço, gatilho, posição, níveis), cotações usadas, resultado acumulado em R$ e log.
+- Ao lado: carteira (capital alocado + realizado + posições abertas) com variação por período (1h, 4h, 1d, 15d),
+  moedas em posição primeiro, cada uma com preço e variação de 24h, gatilho ou venda mínima, detalhes ao passar o
+  mouse na seta (compra, níveis, ordens e resultado), tabela de saldos por moeda e log (completo em `/api/log`).
 
 O servidor escuta só em 127.0.0.1 e não tem autenticação; não exponha na rede.
 
@@ -104,7 +106,8 @@ rode de novo com `--resume`.
 - `trades_<modo>.csv`: uma linha por ordem executada: horário UTC e local, símbolo, lado, motivo (`gatilho`,
   `STOP_LOSS`, `TRAILING_STOP`, `MINIMO_VENDA`, `STOP_MANUAL`), quantidade, preço médio, total na moeda de cotação,
   cotação usada, total em R$, taxa, id da ordem e resultado da venda em R$ e %.
-- `state_<modo>.json`: posições e planos para `--resume`.
+- `state_<modo>.json`: posições, planos e estatísticas por moeda para `--resume`.
+- `equity_<modo>.csv`: valor da carteira a cada minuto (últimos 15 dias), base da variação por período.
 
 ## Como as ordens e os níveis funcionam
 
@@ -117,6 +120,8 @@ rode de novo com `--resume`.
 - Trailing: arma quando o preço atinge o mínimo para venda; a partir daí o nível de venda é o maior entre
   "máxima − recuo" e o mínimo. A venda só dispara depois de uma reversão (preço abaixo da máxima), nunca no instante em
   que o mínimo é tocado. A ordem é a mercado: em quedas rápidas o preço executado pode ficar um pouco abaixo do nível.
+- Stop-loss em preço precisa ficar abaixo do gatilho e mínimo em preço acima dele; o bot recusa o plano caso contrário
+  (um stop acima do preço de compra venderia no mesmo instante e recompraria em seguida, sem parar).
 - Stop-loss e trailing são monitorados **pelo bot**, não são ordens na corretora. Se a máquina ou a rede caírem, não há
   proteção até o bot voltar. Mantenha o processo rodando em máquina estável e use `--resume` ao reiniciar.
 - Falha de venda: registra e tenta de novo a cada `--order-retry-seconds` até conseguir. Falha de compra: até 3

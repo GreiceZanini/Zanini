@@ -184,7 +184,7 @@ def test_update_plans_upsert_replace_remove():
     with pytest.raises(ValueError, match="posicao aberta"):
         bot.remove_plans(["ETHBRL"])
     assert bot.remove_plans(["SOLBRL"]) == ["SOLBRL"]
-    bot.update_plans([plan(symbol="BTCBRL", trigger="500000")], mode="replace")
+    bot.update_plans([plan(symbol="BTCBRL", trigger="500000", r=rules(("pct", "2"), ("pct", "1"), ("pct", "0.5")))], mode="replace")
     assert "ETHBRL" in bot.slots and "BTCBRL" in bot.slots      # ETH com posicao nao e removida
     assert [p.symbol for p in bot.cfg.plans] == ["ETHBRL", "BTCBRL"]
 
@@ -237,7 +237,7 @@ def test_state_save_and_resume(tmp_path):
     bot.handle_price("ETHBRL", D("20000"))
     bot.handle_price("ETHBRL", D("20300"))
     assert state.is_file()
-    bot2 = make_bot(plans=[plan(symbol="SOLBRL", trigger="900")], state_file=state)   # plano novo sem ETH
+    bot2 = make_bot(plans=[plan(symbol="SOLBRL", trigger="900", r=rules(("pct", "2"), ("pct", "1"), ("pct", "0.5")))], state_file=state)   # plano novo sem ETH
     assert bot2.resume() == 1
     assert "ETHBRL" in bot2.slots and bot2.slots["ETHBRL"].position.trailing_armed
     bot2.handle_price("ETHBRL", D("20100"))      # abaixo do trailing salvo: vende
@@ -344,3 +344,56 @@ def test_run_live_loop_with_fake_feed():
     bb.run_live_loop(bot, feed, q, args, stop)
     assert bot.sales == 1 and bot.slots["ETHBRL"].phase == SlotPhase.WAITING
     assert subscribed[0] == ["ETHBRL"] and "restart" not in subscribed
+
+
+# ----------------------------------------------------------------------------- validacao de precos, carteira e estatisticas
+def test_price_rules_must_be_consistent_with_trigger():
+    with pytest.raises(ValueError, match="ABAIXO"):
+        plan(symbol="TIAUSDT", trigger="0.737", r=rules(("price", "1.5"), ("price", "0.755"), ("pct", "0.8"))).validate()
+    with pytest.raises(ValueError, match="ACIMA"):
+        plan(symbol="TIAUSDT", trigger="0.737", r=rules(("money", "1"), ("price", "0.70"), ("pct", "0.8"))).validate()
+    plan(symbol="TIAUSDT", trigger="0.737", r=rules(("price", "0.72"), ("price", "0.755"), ("pct", "0.8"))).validate()
+
+
+def test_wallet_value_history_and_per_coin_stats(tmp_path):
+    p = plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))
+    bot = make_bot(plans=[p, plan(symbol="SOLBRL", trigger="900", r=rules(("pct", "2"), ("pct", "1"), ("pct", "0.5")))],
+                   state_file=tmp_path / "state.json")
+    import time as _t; t0 = _t.time() - 100
+    bot.handle_price("ETHBRL", D("20100"), now=t0)
+    assert bot.wallet_value() == D("100")                       # capital alocado, nada em aberto
+    bot.handle_price("ETHBRL", D("20000"), now=t0 + 10)        # compra R$50
+    bot.handle_price("ETHBRL", D("20400"), now=t0 + 20)        # +2% -> posicao vale R$51
+    assert bot.wallet_value() == D("101")
+    snap = bot.snapshot()
+    eth = next(c for c in snap["coins"] if c["symbol"] == "ETHBRL")
+    assert snap["coins"][0]["symbol"] == "ETHBRL"               # em posicao aparece antes de aguardando
+    assert eth["balance_brl"] == "51" and eth["trades"] == 1 and eth["position"]["pnl_pct"] == "2"
+    assert snap["wallet"]["value"] == "101" and snap["wallet"]["unrealized"] == "1"
+    bot.handle_price("ETHBRL", D("20250"), now=t0 + 30)        # recuo 0,74% > 0,5%: vende com lucro
+    eth = next(c for c in bot.snapshot()["coins"] if c["symbol"] == "ETHBRL")
+    assert eth["trades"] == 2 and D(eth["realized_brl"]) > 0 and eth["realized_pct"] is not None
+    # variacao por periodo: amostras em t0+10 (compra) e t0+30 (venda); 1h atras nao existe -> desde o inicio
+    changes = bot.wallet_changes(now=t0 + 40)
+    assert changes["1h"]["since_start"] is True and D(changes["1h"]["brl"]) > 0
+    assert (tmp_path / "equity_simulate.csv").is_file()
+    # historico e recarregado em uma nova instancia
+    bot2 = make_bot(plans=[p], state_file=tmp_path / "state.json")
+    assert len(bot2.equity_history) >= 2
+
+
+def test_handle_ticker_sets_24h_change():
+    bot = make_bot(plans=[plan(symbol="ETHBRL", trigger="20000", r=rules(("money", "1"), ("money", "0.5"), ("pct", "0.5")))])
+    bot.handle_ticker("ETHBRL", D("20000"), D("20500"))
+    bot.handle_price("ETHBRL", D("20400"))
+    coin = bot.snapshot()["coins"][0]
+    assert coin["change_24h_pct"] == "2" and coin["price"] == "20400"
+
+
+def test_price_feed_parses_mini_ticker():
+    import queue
+    q = queue.Queue()
+    feed = bb.PriceFeed.__new__(bb.PriceFeed)
+    feed._q = q
+    feed._on_message({"stream": "ethbrl@miniTicker", "data": {"e": "24hrMiniTicker", "s": "ETHBRL", "o": "20000", "c": "20400"}})
+    assert q.get_nowait() == ("ticker", "ETHBRL", D("20000"), D("20400"))

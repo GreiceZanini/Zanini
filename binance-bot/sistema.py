@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 
 # --------------------------------------------------------------------------- log em memoria para a pagina
 class MemoryLogHandler(logging.Handler):
-    def __init__(self, maxlen: int = 400):
+    def __init__(self, maxlen: int = 50000):
         super().__init__()
         self.lines = collections.deque(maxlen=maxlen)
         self.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S"))
@@ -283,7 +283,16 @@ def make_handler(runner: BotRunner, memlog: MemoryLogHandler):
             elif self.path.startswith("/api/status"):
                 data = runner.status()
                 data["log"] = list(memlog.lines)[-200:]
+                data["log_total"] = len(memlog.lines)
                 self._json(200, data)
+            elif self.path.startswith("/api/log"):
+                body = ("\n".join(memlog.lines) + "\n").encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self._json(404, {"error": "nao encontrado"})
 

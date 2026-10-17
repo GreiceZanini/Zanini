@@ -19,11 +19,10 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { padding: 18px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
   header h1 { margin: 0; font-size: 20px; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
   main { max-width: 1240px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: 1fr; }
-  @media (min-width: 1000px) { main { grid-template-columns: 1.1fr 0.9fr; } }
+  @media (min-width: 1000px) { main { grid-template-columns: 1.05fr 0.95fr; } }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
   .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
   .tabs button { background: var(--tab-bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
@@ -42,7 +41,7 @@
   input[type=text], input[type=number], select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   .rule { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 8px; }
-  .coin .rule { grid-template-columns: 1fr; }   /* dentro do cartao: valor em cima, unidade embaixo */
+  .coin .rule { grid-template-columns: 1fr; }
   .check { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; }
   .check input { margin-top: 4px; }
   .check .help { color: var(--muted); font-size: 12.5px; display: block; }
@@ -60,31 +59,56 @@
   .msg.ok { display: block; background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
   .msg.err { display: block; background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
   .status-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; border: 1px solid var(--line); }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; border: 1px solid var(--line); white-space: nowrap; }
   .pill.on { color: var(--ok); border-color: var(--ok); }
   .pill.off { color: var(--muted); }
   .pill.err { color: var(--danger); border-color: var(--danger); }
   .pill.hold { color: var(--accent); border-color: var(--accent); }
   .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .modo-line { margin: 8px 0 10px; font-size: 14px; color: var(--muted); }
+  .modo-line b { color: var(--text); }
+  .wallet { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+  .wallet .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .wallet .value small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 6px; }
+  .wallet .periods { display: flex; gap: 6px; margin: 8px 0 6px; flex-wrap: wrap; }
+  .wallet .periods button { background: var(--tab-bg); color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .wallet .periods button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .wallet .change { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .up { color: var(--ok); } .down { color: var(--danger); } .flat { color: var(--muted); }
   dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 10px 0 0; font-size: 14px; }
   dt { color: var(--muted); }
   dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
-  .coins-status { display: grid; gap: 10px; margin-top: 12px; }
+  .coins-status { display: grid; gap: 10px; margin-top: 4px; }
   .coin-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
-  .coin-card .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .coin-card .top b { font-size: 15px; }
-  .coin-card dl { margin-top: 6px; font-size: 13.5px; }
+  .coin-card.holding { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+  .coin-card .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .coin-card .top b { font-size: 15.5px; }
+  .coin-card .price { font-variant-numeric: tabular-nums; }
+  .coin-card .chg { font-size: 12.5px; font-weight: 600; margin-left: 4px; }
+  .coin-card .top .pill { margin-left: auto; }
+  .coin-card .expand { border: 1px solid var(--line); background: var(--tab-bg); color: var(--text); border-radius: 6px; width: 30px; height: 28px; cursor: pointer; font-size: 14px; }
+  .coin-card .main { margin-top: 6px; font-size: 14px; }
+  .coin-card .main .sub { color: var(--muted); font-size: 13px; }
+  .coin-card .details { display: none; border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 4px; }
+  .coin-card.open .details { display: block; }
+  .coin-card .details dl { font-size: 13.5px; margin-top: 6px; }
+  table.balances { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  table.balances th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  table.balances td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  table.balances td.num, table.balances th.num { text-align: right; }
   .warnbox { border-left: 4px solid var(--warn); padding: 8px 12px; background: color-mix(in srgb, var(--warn) 12%, transparent); border-radius: 6px; font-size: 13.5px; margin: 10px 0; }
-  pre.log { background: var(--code-bg); color: var(--code-text); border-radius: 8px; padding: 10px 12px; height: 300px; overflow: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; margin: 10px 0 0; }
+  pre.log { background: var(--code-bg); color: var(--code-text); border-radius: 8px; padding: 10px 12px; height: 260px; overflow: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; margin: 8px 0 0; }
+  .log-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .log-head a { color: var(--accent); font-size: 13px; }
   details.adv summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
   .hidden { display: none !important; }
   ul.open-list { margin: 6px 0 10px 18px; padding: 0; font-size: 14px; }
+  footer { max-width: 1240px; margin: 0 auto; padding: 0 16px 24px; color: var(--muted); font-size: 13.5px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Sistema · Bot Binance (spot)</h1>
-  <p>Iniciar, alimentar e parar o bot. Uso local: esta página fala com o <code>sistema.py</code> rodando nesta máquina. Todas as moedas são observadas ao mesmo tempo e cada uma volta a esperar o gatilho depois de vender, até você parar.</p>
 </header>
 
 <main>
@@ -228,18 +252,34 @@
       <h2 style="margin:0">Situação</h2>
       <span class="pill off" id="pill">desconectado</span>
     </div>
-    <dl>
-      <dt>Modo</dt><dd id="s-mode">–</dd>
-      <dt>Cotações</dt><dd id="s-rates">–</dd>
-      <dt>Resultado</dt><dd id="s-pnl">–</dd>
-      <dt>Início</dt><dd id="s-started">–</dd>
-    </dl>
+    <div class="modo-line">Modo: <b id="s-mode">–</b> · início <span id="s-started">–</span> · cotações <span id="s-rates">–</span></div>
+
+    <div class="wallet">
+      <div class="value"><span id="w-value">–</span><small>carteira</small></div>
+      <div class="periods" id="w-periods">
+        <button type="button" data-period="1h" aria-pressed="true">1h</button>
+        <button type="button" data-period="4h" aria-pressed="false">4h</button>
+        <button type="button" data-period="1d" aria-pressed="false">1d</button>
+        <button type="button" data-period="15d" aria-pressed="false">15d</button>
+      </div>
+      <div class="change flat" id="w-change">–</div>
+      <div class="note" id="w-detail">capital alocado · realizado · em aberto</div>
+    </div>
     <div class="warnbox" id="s-error" style="display:none"></div>
+
     <div class="coins-status" id="coins-status"></div>
-    <h2 style="margin:16px 0 0;font-size:15px">Log</h2>
+
+    <h3 style="margin-top:16px">Moedas desta execução</h3>
+    <table class="balances" id="balances"><thead><tr><th>Moeda</th><th class="num">Saldo atual</th><th class="num">Resultado</th><th class="num">%</th><th class="num">Ordens</th></tr></thead><tbody></tbody></table>
+
+    <div class="log-head"><h3>Log <span class="note" id="log-count"></span></h3><a href="/api/log" target="_blank" rel="noopener">ver log completo</a></div>
     <pre class="log" id="log">aguardando conexão com o sistema.py…</pre>
   </aside>
 </main>
+
+<footer>
+  Iniciar, alimentar e parar o bot. Uso local: esta página fala com o <code>sistema.py</code> rodando nesta máquina. Todas as moedas são observadas ao mesmo tempo e cada uma volta a esperar o gatilho depois de vender, até você parar. A carteira é o capital alocado (soma dos valores por compra) mais o resultado realizado e o das posições abertas. A variação de cada moeda é a das últimas 24 horas, como na Binance. O log completo fica em <code>data/bot.log</code> e cada ordem em <code>data/trades_&lt;modo&gt;.csv</code>.
+</footer>
 
 <template id="coin-template">
   <div class="coin">
@@ -273,7 +313,7 @@
       </label>
       <label class="field">
         <span class="name">Na queda: stop-loss</span>
-        <span class="help">Quanto aceita perder. Ex.: R$ 1,00 na operação, ou 2%, ou um preço.</span>
+        <span class="help">Quanto aceita perder. Ex.: R$ 1,00 na operação, ou 2%, ou um preço (abaixo do gatilho).</span>
         <div class="rule">
           <input type="text" data-k="stop_value" inputmode="decimal" placeholder="1">
           <select data-k="stop_unit"><option value="money">R$ na operação</option><option value="pct">%</option><option value="price">preço</option></select>
@@ -281,7 +321,7 @@
       </label>
       <label class="field">
         <span class="name">Na alta: mínimo para venda</span>
-        <span class="help">Escolha uma opção por moeda: preço de venda (ex.: 0,071) ou lucro mínimo em R$ (ex.: 2,00). Ao atingir, o bot não vende: passa a seguir a alta.</span>
+        <span class="help">Escolha uma opção por moeda: preço de venda (ex.: 0,071, acima do gatilho) ou lucro mínimo em R$ (ex.: 2,00). Ao atingir, o bot não vende: passa a seguir a alta.</span>
         <div class="rule">
           <input type="text" data-k="activation_value" inputmode="decimal" placeholder="0,071">
           <select data-k="activation_unit"><option value="price">preço de venda</option><option value="money">lucro em R$</option><option value="pct">lucro em %</option></select>
@@ -314,19 +354,18 @@
   }));
   try { const t = localStorage.getItem('sistema.tab'); if (t) $(`.tabs button[data-tab="${t}"]`)?.click(); } catch (e) {}
 
-  // ---------- cartões de moeda
+  // ---------- cartões de moeda (formulários)
   function addCoin(containerId, data) {
     const box = $('#' + containerId);
     const node = $('#coin-template').content.firstElementChild.cloneNode(true);
     const n = box.children.length + 1;
     node.querySelector('h3').textContent = 'Moeda ' + n;
     $$('[data-k]', node).forEach(el => { el.id = `${containerId}-${n}-${el.dataset.k}`; });
-    node.querySelector('[data-remove]').addEventListener('click', () => { node.remove(); renumber(box); });
+    node.querySelector('[data-remove]').addEventListener('click', () => { node.remove(); $$('.coin', box).forEach((c, i) => c.querySelector('h3').textContent = 'Moeda ' + (i + 1)); });
     if (data) fillCoin(node, data);
     box.appendChild(node);
     return node;
   }
-  function renumber(box) { $$('.coin', box).forEach((c, i) => c.querySelector('h3').textContent = 'Moeda ' + (i + 1)); }
   function fillCoin(node, d) {
     const set = (k, v) => { const el = node.querySelector(`[data-k="${k}"]`); if (el && v != null) el.value = v; };
     set('symbol', d.symbol); set('trigger', d.trigger); set('direction', d.direction || 'auto'); set('amount_brl', d.amount_brl);
@@ -351,7 +390,6 @@
   addCoin('coins-start', { symbol: 'ETHBRL', trigger: '20000', amount_brl: '50', rules: { stop: { unit: 'money', value: '1' }, activation: { unit: 'money', value: '2' }, trail: { unit: 'pct', value: '0,8' } } });
   addCoin('coins-feed');
 
-  // ---------- modo live / simulação
   const modeSel = $('#mode');
   function onMode() {
     const live = modeSel.value === 'live', sim = modeSel.value === 'simulate';
@@ -371,7 +409,11 @@
   }
   const fmtTime = iso => iso ? new Date(iso).toLocaleString('pt-BR') : '–';
   const brl = v => v == null || v === '' ? '–' : 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const px = v => { if (v == null || v === '') return '–'; const n = Number(v); if (!Number.isFinite(n)) return String(v); return String(Number(n.toPrecision(8))); };
+  const brlSigned = v => v == null ? '–' : (Number(v) > 0 ? '+' : '') + brl(v);
+  const pct = v => v == null || v === '' ? '–' : (Number(v) > 0 ? '+' : '') + Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + '%';
+  const px = v => { if (v == null || v === '') return '–'; const n = Number(v); if (!Number.isFinite(n)) return String(v); return String(Number(n.toPrecision(8))).replace('.', ','); };
+  const cls = v => v == null ? 'flat' : Number(v) > 0 ? 'up' : Number(v) < 0 ? 'down' : 'flat';
+  const UNIT = { money: v => brl(v), pct: v => pct(v).replace('+', ''), price: v => 'preço ' + px(v) };
 
   // ---------- iniciar
   $('#form-start').addEventListener('submit', async ev => {
@@ -432,23 +474,48 @@
 
   // ---------- situação
   const PHASES = { WAITING_BUY: 'aguardando gatilho', HOLDING: 'em posição', ERROR: 'erro' };
-  const UNIT = { money: v => brl(v), pct: v => v + '%', price: v => 'preço ' + v };
+  let period = '1h';
+  try { period = localStorage.getItem('sistema.period') || '1h'; } catch (e) {}
+  $$('#w-periods button').forEach(b => b.addEventListener('click', () => { period = b.dataset.period; try { localStorage.setItem('sistema.period', period); } catch (e) {} if (lastStatus) render(lastStatus); }));
+  const openCards = new Set();
   let logPinned = true;
   const logEl = $('#log');
   logEl.addEventListener('scroll', () => { logPinned = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 8; });
 
   function coinCard(c) {
-    const p = c.plan, r = p.rules, pos = c.position;
-    const cls = c.phase === 'HOLDING' ? 'hold' : c.phase === 'ERROR' ? 'err' : 'warn';
-    let rows = `<dt>Preço</dt><dd>${px(c.price)}</dd>
-      <dt>Gatilho</dt><dd>${px(p.trigger)} · ${brl(p.amount_brl)} por compra${c.resolved ? (c.resolved === 'below' ? ' · compra quando ≤' : ' · compra quando ≥') : ''}</dd>
-      <dt>Regras</dt><dd>stop ${UNIT[r.stop.unit](r.stop.value)} · mínimo ${UNIT[r.activation.unit](r.activation.value)} · trailing ${UNIT[r.trail.unit](r.trail.value)}</dd>`;
+    const p = c.plan, r = p.rules, pos = c.position, holding = c.phase === 'HOLDING';
+    const pillCls = holding ? 'hold' : c.phase === 'ERROR' ? 'err' : 'warn';
+    const chg = c.change_24h_pct;
+    let main;
     if (pos) {
-      rows += `<dt>Posição</dt><dd>qtd ${pos.qty} · entrada ${px(pos.entry_price)} (${brl(pos.entry_brl)}) · agora ${brl(pos.value_brl)} (${pos.pnl_pct ?? '–'}%, ${brl(pos.pnl_brl)})</dd>
-        <dt>Níveis</dt><dd>stop-loss ${px(pos.stop_loss_price)} · mínimo ${px(pos.activation_price)} · ${pos.trailing_armed ? 'trailing armado em ' + px(pos.trailing_stop_price) + ' (máx. ' + px(pos.highest) + ')' : 'trailing arma ao atingir o mínimo'}</dd>`;
+      main = `Venda mínima em <b>${px(pos.activation_price)}</b> · posição <b>${brl(pos.value_brl)}</b> <span class="${cls(pos.pnl_brl)}">${brlSigned(pos.pnl_brl)} (${pct(pos.pnl_pct)})</span>` +
+             `<div class="sub">${pos.trailing_armed ? 'trailing armado: vende se recuar até ' + px(pos.trailing_stop_price) + ' (máxima ' + px(pos.highest) + ')' : 'ao atingir o mínimo, segue a alta e vende no recuo de ' + UNIT[r.trail.unit](r.trail.value)} · stop-loss em ${px(pos.stop_loss_price)}</div>`;
+    } else {
+      main = `Compra em <b>${px(p.trigger)}</b> · <b>${brl(p.amount_brl)}</b>` +
+             `<div class="sub">${c.resolved === 'below' ? 'aguardando o preço cair até o gatilho' : c.resolved === 'above' ? 'aguardando o preço subir até o gatilho' : 'aguardando o primeiro preço'}${c.error ? ' · ' + c.error : ''}</div>`;
     }
-    if (c.error) rows += `<dt>Erro</dt><dd>${c.error}</dd>`;
-    return `<div class="coin-card"><div class="top"><b>${c.symbol}</b><span class="pill ${cls}">${PHASES[c.phase] || c.phase}</span></div><dl>${rows}</dl></div>`;
+    let det = `<dt>Gatilho de compra</dt><dd>${px(p.trigger)} · ${brl(p.amount_brl)} por compra · direção ${p.direction}</dd>
+      <dt>Stop-loss</dt><dd>${UNIT[r.stop.unit](r.stop.value)}${pos ? ' · nível ' + px(pos.stop_loss_price) + ' (' + pct(pos.stop_pct) + ' da compra)' : ''}</dd>
+      <dt>Mínimo para venda</dt><dd>${UNIT[r.activation.unit](r.activation.value)}${pos ? ' · nível ' + px(pos.activation_price) + ' (' + pct(pos.activation_pct) + ' da compra)' : ''}</dd>
+      <dt>Recuo do trailing</dt><dd>${UNIT[r.trail.unit](r.trail.value)} a partir da máxima, nunca abaixo do mínimo${pos && pos.trailing_armed ? ' · armado em ' + px(pos.trailing_stop_price) + ' (' + pct(pos.trailing_pct_from_high) + ' da máxima ' + px(pos.highest) + ')' : ''}</dd>`;
+    if (pos) det += `<dt>Compra</dt><dd>${px(pos.entry_price)} · qtd ${pos.qty} · ${brl(pos.entry_brl)} · cotação ${pos.rate} · ${fmtTime(pos.entry_time)}</dd>`;
+    det += `<dt>Ordens desde o início</dt><dd>${c.trades}</dd>
+      <dt>Resultado realizado</dt><dd class="${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}${c.realized_pct != null ? ' (' + pct(c.realized_pct) + ' do valor comprado)' : ''}</dd>`;
+    return `<div class="coin-card ${holding ? 'holding' : ''} ${openCards.has(c.symbol) ? 'open' : ''}" data-sym="${c.symbol}">
+      <div class="top"><b>${c.symbol}</b><span class="price">${px(c.price)}<span class="chg ${cls(chg)}">${chg == null ? '' : pct(chg) + ' 24h'}</span></span>
+        <span class="pill ${pillCls}">${PHASES[c.phase] || c.phase}</span><button type="button" class="expand" title="Mais detalhes" aria-label="Mais detalhes de ${c.symbol}">${openCards.has(c.symbol) ? '▴' : '▾'}</button></div>
+      <div class="main">${main}</div>
+      <div class="details"><dl>${det}</dl></div>
+    </div>`;
+  }
+
+  function bindCards() {
+    $$('#coins-status .coin-card').forEach(card => {
+      const sym = card.dataset.sym, btn = card.querySelector('.expand');
+      btn.addEventListener('mouseenter', () => { card.classList.add('open'); btn.textContent = '▴'; });
+      btn.addEventListener('click', () => { if (openCards.has(sym)) openCards.delete(sym); else openCards.add(sym); card.classList.toggle('open', openCards.has(sym)); btn.textContent = openCards.has(sym) ? '▴' : '▾'; });
+      card.addEventListener('mouseleave', () => { if (!openCards.has(sym)) { card.classList.remove('open'); btn.textContent = '▾'; } });
+    });
   }
 
   function render(st) {
@@ -462,15 +529,30 @@
     const err = $('#s-error');
     const errText = st.last_error || (b && b.error);
     err.style.display = errText ? '' : 'none'; err.textContent = errText || '';
-    if (!b) { $('#s-mode').textContent = '–'; $('#s-rates').textContent = '–'; $('#s-pnl').textContent = '–';
-              $('#coins-status').innerHTML = ''; $('#stop-positions').textContent = 'Sem posições abertas no momento.'; return; }
+    $$('#w-periods button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.period === period)));
+    if (!b) { $('#s-mode').textContent = '–'; $('#s-rates').textContent = '–'; $('#w-value').textContent = '–'; $('#w-change').textContent = '–'; $('#w-change').className = 'change flat';
+              $('#w-detail').textContent = 'capital alocado · realizado · em aberto'; $('#coins-status').innerHTML = ''; $('#balances tbody').innerHTML = '';
+              $('#stop-positions').textContent = 'Sem posições abertas no momento.'; return; }
     $('#s-mode').textContent = { simulate: 'Simulação', testnet: 'Testnet', live: 'LIVE (dinheiro real)' }[b.mode] || b.mode;
-    $('#s-rates').textContent = Object.entries(b.rates).filter(([k]) => k !== 'BRL').map(([k, v]) => `${k}/BRL ${v}`).join(' · ') || 'pares em BRL (sem conversão)';
-    $('#s-pnl').textContent = `${brl(b.realized_brl)} em ${b.sales} venda${b.sales === 1 ? '' : 's'} · ${b.open_positions} posição(ões) aberta(s)`;
+    $('#s-rates').textContent = Object.entries(b.rates).filter(([k]) => k !== 'BRL').map(([k, v]) => `${k}/BRL ${px(v)}`).join(' · ') || 'pares em BRL';
+    const w = b.wallet || {};
+    $('#w-value').textContent = brl(w.value);
+    const ch = (w.changes || {})[period] || {};
+    const wc = $('#w-change');
+    wc.className = 'change ' + cls(ch.pct);
+    wc.textContent = ch.pct == null ? 'sem histórico ainda' : `${brlSigned(ch.brl)} (${pct(ch.pct)}) em ${period}${ch.since_start ? ' · desde o início (histórico mais curto que o período)' : ''}`;
+    $('#w-detail').textContent = `capital alocado ${brl(w.allocated)} · realizado ${brlSigned(w.realized)} em ${b.sales} venda${b.sales === 1 ? '' : 's'} · em aberto ${brlSigned(w.unrealized)} (${b.open_positions} posição(ões))`;
     $('#coins-status').innerHTML = b.coins.map(coinCard).join('');
+    bindCards();
+    const total = Number(w.value) || 0;
+    $('#balances tbody').innerHTML = b.coins.map(c => {
+      const bal = Number(c.balance_brl) || 0;
+      return `<tr><td>${c.symbol}</td><td class="num">${brl(bal)}${total ? ' <span class="note">(' + (bal / total * 100).toFixed(1).replace('.', ',') + '%)</span>' : ''}</td>
+        <td class="num ${cls(c.realized_brl)}">${brlSigned(c.realized_brl)}</td><td class="num ${cls(c.realized_pct)}">${c.realized_pct != null ? pct(c.realized_pct) : '–'}</td><td class="num">${c.trades}</td></tr>`;
+    }).join('');
     const open = b.coins.filter(c => c.position);
     $('#stop-positions').innerHTML = open.length
-      ? '<ul class="open-list">' + open.map(c => `<li>${c.symbol}: qtd ${c.position.qty}, entrada ${px(c.position.entry_price)}, agora ${brl(c.position.value_brl)} (${brl(c.position.pnl_brl)})</li>`).join('') + '</ul>'
+      ? '<ul class="open-list">' + open.map(c => `<li>${c.symbol}: qtd ${c.position.qty}, entrada ${px(c.position.entry_price)}, agora ${brl(c.position.value_brl)} (${brlSigned(c.position.pnl_brl)})</li>`).join('') + '</ul>'
       : 'Sem posições abertas no momento.';
   }
 
@@ -480,6 +562,7 @@
       const st = await r.json();
       render(st);
       logEl.textContent = (st.log || []).join('\n') || '(sem registros ainda)';
+      $('#log-count').textContent = st.log_total ? `(últimas ${Math.min(200, st.log_total)} de ${st.log_total} linhas)` : '';
       if (logPinned) logEl.scrollTop = logEl.scrollHeight;
     } catch (e) {
       const pill = $('#pill'); pill.textContent = 'sem conexão'; pill.className = 'pill err';
